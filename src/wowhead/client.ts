@@ -8,7 +8,16 @@ import {
   type WowheadEntityDetails,
 } from './types.js';
 import { formatTooltip, getQualityName } from './formatter.js';
-import { parseItemSources, parseItemXml, type ItemSourcesResult } from './pageParser.js';
+import {
+  parseItemSources,
+  parseItemXml,
+  parseQuestPage,
+  parseZoneQuests,
+  type ItemSourcesResult,
+  type QuestPageDetails,
+  type ZoneQuestsPage,
+} from './pageParser.js';
+import { parseItemXmlInfo, type ItemInfo } from './itemInfo.js';
 import { logger } from '../util/logger.js';
 
 export const WOWHEAD_FOREVER_DATA_ENV = 16;
@@ -40,11 +49,12 @@ export function normalizeEntityType(type: string): string {
 }
 
 export class WowheadForeverClient {
-  private readonly http: Got;
+  private http: Got;
   private readonly userAgent: string;
   private readonly cacheTtlMs: number;
   private readonly pagesDataDir: string;
   private readonly cache = new Map<string, CacheEntry<unknown>>();
+  private currentCookie?: string;
 
   constructor(options: WowheadClientOptions = {}) {
     this.userAgent =
@@ -58,6 +68,7 @@ export class WowheadForeverClient {
       path.resolve(process.cwd(), 'data', 'pages');
 
     const cookie = options.cookie ?? process.env['WOWHEAD_COOKIE'];
+    this.currentCookie = cookie;
 
     const headers: Record<string, string> = {
       'user-agent': this.userAgent,
@@ -84,6 +95,35 @@ export class WowheadForeverClient {
         limit: 2,
       },
     });
+  }
+
+  public setCookie(cookie: string): void {
+    const trimmed = cookie.trim();
+    const formatted = trimmed.startsWith('aws-waf-token=') ? trimmed : `aws-waf-token=${trimmed}`;
+    this.currentCookie = formatted;
+
+    const headers: Record<string, string> = {
+      'user-agent': this.userAgent,
+      accept: '*/*',
+      'accept-language': 'en-US,en;q=0.9',
+      'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'same-origin',
+      cookie: formatted,
+    };
+
+    this.http = got.extend({
+      headers,
+      timeout: { request: 10000 },
+      retry: { limit: 2 },
+    });
+  }
+
+  public getCookie(): string | undefined {
+    return this.currentCookie;
   }
 
   private getCached<T>(key: string): T | undefined {
@@ -210,14 +250,7 @@ export class WowheadForeverClient {
       this.setCached(cacheKey, parsed);
       return parsed;
     } catch (err: unknown) {
-      const status = (err as { response?: { statusCode?: number } })?.response?.statusCode;
-      if (status === 403 || status === 202) {
-        throw new Error(
-          `Wowhead full item page for item #${itemId} is protected by verification. ` +
-            `Save the page HTML to data/pages/item-${itemId}.html or configure WOWHEAD_COOKIE.`
-        );
-      }
-      throw new Error(`Failed to fetch sources for item #${itemId}: ${err instanceof Error ? err.message : String(err)}`);
+      throw this.wrapFetchError(err, `sources for item #${itemId}`);
     }
   }
 
@@ -367,8 +400,162 @@ export class WowheadForeverClient {
       map: raw.map,
     };
 
+    // If this is a quest, attach rewards, infobox details and chain from the full quest page
+    if (normType === 'quest') {
+      const questData = await this.getQuestDetails(id);
+      if (!questData) {
+        details.rewardsStatus = 'unavailable';
+      } else {
+        const hasRewards = Boolean(questData.items || questData.experience || questData.moneyCopper || questData.reputations);
+        details.rewardsStatus = hasRewards ? 'ok' : 'none';
+        if (hasRewards) {
+          details.rewards = {
+            items: questData.items,
+            experience: questData.experience,
+            moneyCopper: questData.moneyCopper,
+            reputations: questData.reputations,
+          };
+        }
+        details.questInfo = questData.info;
+        details.chain = questData.chain;
+      }
+      // Don't cache a degraded result for the full TTL; the page may be reachable on retry
+      if (details.rewardsStatus === 'unavailable') return details;
+    }
+
     this.setCached(cacheKey, details);
     return details;
+  }
+
+  /**
+   * Fetches structured item data (type, slot, DPS, stats, class/race restrictions)
+   * from Wowhead's item XML endpoint.
+   */
+  public async getItemInfo(itemId: number): Promise<ItemInfo> {
+    const cacheKey = `iteminfo:${itemId}`;
+    const cached = this.getCached<ItemInfo>(cacheKey);
+    if (cached) return cached;
+
+    const url = `https://www.wowhead.com/forever/item=${itemId}&xml`;
+    let body: string;
+    try {
+      body = (await this.http.get(url)).body;
+    } catch (err) {
+      throw this.wrapFetchError(err, `item #${itemId} data`);
+    }
+    const info = parseItemXmlInfo(body);
+    if (!info) {
+      throw new Error(`Item #${itemId} not found or unparseable in Wowhead Forever item XML`);
+    }
+    this.setCached(cacheKey, info);
+    return info;
+  }
+
+  /** Fetches many items' info in parallel; failures are reported per item instead of thrown. */
+  public async getItemInfos(itemIds: number[]): Promise<Map<number, ItemInfo | { error: string }>> {
+    const unique = [...new Set(itemIds)];
+    const results = new Map<number, ItemInfo | { error: string }>();
+    const concurrency = 6;
+    for (let i = 0; i < unique.length; i += concurrency) {
+      await Promise.all(
+        unique.slice(i, i + concurrency).map(async (id) => {
+          try {
+            results.set(id, await this.getItemInfo(id));
+          } catch (err) {
+            results.set(id, { error: err instanceof Error ? err.message : String(err) });
+          }
+        }),
+      );
+    }
+    return results;
+  }
+
+  /**
+   * Fetches a zone page and returns its quest list (levels, sides, rewards) plus the
+   * zone's quest reward items with type/DPS/armor data. Requires the session cookie.
+   */
+  public async getZoneQuests(zoneId: number): Promise<ZoneQuestsPage> {
+    const cacheKey = `zonequests:${zoneId}`;
+    const cached = this.getCached<ZoneQuestsPage>(cacheKey);
+    if (cached) return cached;
+
+    const url = `https://www.wowhead.com/forever/zone=${zoneId}`;
+    let body: string;
+    try {
+      body = (await this.http.get(url)).body;
+    } catch (err) {
+      throw this.wrapFetchError(err, `zone #${zoneId} page`);
+    }
+    const parsed = parseZoneQuests(body, zoneId);
+    if (!parsed.isZonePage) {
+      throw new Error(
+        `Zone #${zoneId} page did not contain zone data (possibly a WAF challenge or unknown zone). ` +
+          'Check the session with wowhead_get_session_status.',
+      );
+    }
+    this.setCached(cacheKey, parsed);
+    return parsed;
+  }
+
+  private wrapFetchError(err: unknown, what: string): Error {
+    const status = (err as { response?: { statusCode?: number } })?.response?.statusCode;
+    if (status === 403 || status === 405 || status === 202) {
+      const reason = this.currentCookie ? 'expired or invalid' : 'missing';
+      return new Error(
+        `[WAF_VERIFICATION_REQUIRED] Wowhead blocked the request for ${what} (HTTP ${status}). ` +
+          `The aws-waf-token session cookie is ${reason}. Supply a fresh token via wowhead_set_session_token.`,
+      );
+    }
+    if (status === 404) {
+      return new Error(`Not found in Wowhead Forever: ${what}`);
+    }
+    return new Error(`Failed to fetch ${what}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  /**
+   * Fetches full quest page details (rewards, XP, money, reputation) from local snapshots
+   * or the live Wowhead quest page.
+   */
+  public async getQuestDetails(questId: number): Promise<QuestPageDetails | undefined> {
+    const cacheKey = `quest:details:${questId}`;
+    const cached = this.getCached<QuestPageDetails>(cacheKey);
+    if (cached) return cached;
+
+    // 1. Check local snapshots
+    const candidates = [
+      path.join(this.pagesDataDir, `quest-${questId}.html`),
+      path.join(this.pagesDataDir, `${questId}.html`),
+      path.join(this.pagesDataDir, `quest-${questId}.txt`),
+    ];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        try {
+          const content = fs.readFileSync(candidate, 'utf8');
+          const parsed = parseQuestPage(content, questId);
+          this.setCached(cacheKey, parsed);
+          return parsed;
+        } catch (err) {
+          logger.warn({ err, file: candidate }, 'Failed to parse local quest snapshot');
+        }
+      }
+    }
+
+    // 2. Fetch live quest page if session cookie is present
+    const url = `https://www.wowhead.com/forever/quest=${questId}`;
+    try {
+      const response = await this.http.get(url);
+      const parsed = parseQuestPage(response.body, questId);
+      if (!parsed.isQuestPage) {
+        logger.warn({ questId, statusCode: response.statusCode }, 'Quest page response was not a quest page (possible WAF challenge)');
+        return undefined;
+      }
+      this.setCached(cacheKey, parsed);
+      return parsed;
+    } catch (err: unknown) {
+      logger.warn({ err: this.wrapFetchError(err, `quest #${questId} page`).message, questId }, 'Could not fetch live quest page for rewards');
+      return undefined;
+    }
   }
 
   /**

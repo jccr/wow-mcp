@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseItemSources, extractListviewsFromHtml } from '../src/wowhead/pageParser.js';
+import { parseItemSources, extractListviewsFromHtml, parseQuestPage } from '../src/wowhead/pageParser.js';
 
 describe('Wowhead Page Parser (ListView tables)', () => {
   const sampleHtml = `
@@ -116,5 +116,33 @@ describe('Wowhead Page Parser (ListView tables)', () => {
     assert.equal(result.comments[0].user, 'LeatherGuru');
     assert.equal(result.comments[0].rating, 45);
     assert.ok(result.comments[0].body.includes('Redridge Mountains'));
+  });
+
+  it('parses quest rewards from quest page HTML', () => {
+    const questHtml = `
+      <h2 class="heading-size-2">Rewards</h2>You will receive:
+      <table class="icontab icontab-box">
+      <tr><th id="icontab-icon1"></th><td><span class="q2"><a href="/forever/item=5420/banshee-armor">Banshee Armor</a></span></td>
+      </tr></table>
+      <h2 class="heading-size-3">Gains</h2>Upon completion of this quest you will gain:
+      <ul>
+      <li><div><span>150</span> reputation with <a href="/forever/faction=76/orgrimmar">Orgrimmar</a></div></li></ul>
+      <script>WH.Wow.Quest.setupScalingRewards({"minLevel":14,"maxLevel":14,"xp":{"multiplier":1,"levels":{"14":1250}},"coin":{"rewardAtCap":0,"multiplier":1,"levels":{"14":800}}});</script>
+      See if you've already completed this
+    `;
+
+    const parsed = parseQuestPage(questHtml, 924);
+    assert.equal(parsed.questId, 924);
+    assert.ok(parsed.items);
+    assert.equal(parsed.items.length, 1);
+    assert.equal(parsed.items[0].id, 5420);
+    assert.equal(parsed.items[0].name, 'Banshee Armor');
+    assert.equal(parsed.items[0].choice, false);
+    assert.equal(parsed.experience, 1250);
+    assert.equal(parsed.moneyCopper, 800);
+    assert.ok(parsed.reputations);
+    assert.equal(parsed.reputations.length, 1);
+    assert.equal(parsed.reputations[0].factionId, 76);
+    assert.equal(parsed.reputations[0].amount, 150);
   });
 });

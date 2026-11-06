@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WowheadForeverClient } from './client.js';
@@ -5,6 +7,8 @@ import { WowheadDataClient } from './dataClient.js';
 import { findClass, WOW_CLASSES } from './classes.js';
 import { findDungeons, FOREVER_DUNGEONS } from './dungeons.js';
 import { entityTypeEnum } from './types.js';
+import { checkUsability, compareItems, type ItemInfo } from './itemInfo.js';
+import { enrichCandidates, filterZoneQuests, findRewardCandidates } from './questRewards.js';
 
 function errorContent(message: string) {
   return {
@@ -78,7 +82,8 @@ export function registerWowheadTools(
   // ── wowhead_get_item ───────────────────────────────────
   server.tool(
     'wowhead_get_item',
-    'Fetch detailed item statistics, item level, equip/use effects, and tooltip from Wowhead Forever by item ID.',
+    'Fetch detailed item statistics, item level, equip/use effects, and tooltip from Wowhead Forever by item ID. ' +
+      'Includes structured info (type, slot, DPS, stats, class/race restrictions) when available.',
     {
       id: z.number().int().positive().describe('Wowhead item ID (e.g. 19019 for Thunderfury, 252484 for Timbermaw Tunic)'),
       locale: z.union([z.string(), z.number()]).default(0).describe('Locale code or number (0 for English). Default: 0'),
@@ -86,7 +91,13 @@ export function registerWowheadTools(
     async ({ id, locale }) => {
       try {
         const details = await client.getTooltip('item', id, locale);
-        return jsonContent(details);
+        let info: ItemInfo | undefined;
+        try {
+          info = await client.getItemInfo(id);
+        } catch {
+          // Structured info is best effort; the tooltip is still useful without it
+        }
+        return jsonContent(info ? { ...details, info } : details);
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
@@ -112,45 +123,62 @@ export function registerWowheadTools(
         'reward-from-quests',
         'comments',
       ]).default('all').describe('Optional filter for specific relation category: "dropped-by", "contained-in", "skinned-from", "reagent-for", "can-be-placed-in", "see-also", "comments", or "all"'),
+      limit: z.number().int().min(1).max(100).default(15).describe('Maximum number of rows/entries to return per table category (default: 15 to prevent huge responses)'),
     },
-    async ({ id, section }) => {
+    async ({ id, section, limit }) => {
       try {
         const sources = await client.getItemSources(id);
+        const applyLimit = <T>(arr?: T[]): T[] | undefined => (arr ? arr.slice(0, limit) : undefined);
+
         if (section === 'all') {
-          return jsonContent(sources);
+          return jsonContent({
+            ...sources,
+            droppedBy: applyLimit(sources.droppedBy),
+            skinnedFrom: applyLimit(sources.skinnedFrom),
+            containedInObject: applyLimit(sources.containedInObject),
+            minedFromObject: applyLimit(sources.minedFromObject),
+            gatheredFromObject: applyLimit(sources.gatheredFromObject),
+            soldBy: applyLimit(sources.soldBy),
+            rewardFromQuests: applyLimit(sources.rewardFromQuests),
+            craftedBy: applyLimit(sources.craftedBy),
+            reagentFor: applyLimit(sources.reagentFor),
+            canBePlacedIn: applyLimit(sources.canBePlacedIn),
+            seeAlso: applyLimit(sources.seeAlso),
+            comments: applyLimit(sources.comments),
+          });
         }
 
         const filtered: Record<string, any> = { itemId: id, section };
         switch (section) {
           case 'dropped-by':
-            filtered['droppedBy'] = sources.droppedBy;
+            filtered['droppedBy'] = applyLimit(sources.droppedBy);
             break;
           case 'contained-in':
-            filtered['containedIn'] = sources.containedInObject;
+            filtered['containedIn'] = applyLimit(sources.containedInObject);
             break;
           case 'skinned-from':
-            filtered['skinnedFrom'] = sources.skinnedFrom;
+            filtered['skinnedFrom'] = applyLimit(sources.skinnedFrom);
             break;
           case 'reagent-for':
-            filtered['reagentFor'] = sources.reagentFor;
+            filtered['reagentFor'] = applyLimit(sources.reagentFor);
             break;
           case 'can-be-placed-in':
-            filtered['canBePlacedIn'] = sources.canBePlacedIn;
+            filtered['canBePlacedIn'] = applyLimit(sources.canBePlacedIn);
             break;
           case 'see-also':
-            filtered['seeAlso'] = sources.seeAlso;
+            filtered['seeAlso'] = applyLimit(sources.seeAlso);
             break;
           case 'sold-by':
-            filtered['soldBy'] = sources.soldBy;
+            filtered['soldBy'] = applyLimit(sources.soldBy);
             break;
           case 'crafted-by':
-            filtered['craftedBy'] = sources.craftedBy;
+            filtered['craftedBy'] = applyLimit(sources.craftedBy);
             break;
           case 'reward-from-quests':
-            filtered['rewardFromQuests'] = sources.rewardFromQuests;
+            filtered['rewardFromQuests'] = applyLimit(sources.rewardFromQuests);
             break;
           case 'comments':
-            filtered['comments'] = sources.comments;
+            filtered['comments'] = applyLimit(sources.comments);
             break;
         }
         return jsonContent(filtered);
@@ -181,15 +209,155 @@ export function registerWowheadTools(
   // ── wowhead_get_quest ──────────────────────────────────
   server.tool(
     'wowhead_get_quest',
-    'Fetch quest description, objectives, and requirements from Wowhead Forever by quest ID.',
+    'Fetch a Wowhead Forever quest by ID: objectives, rewards (items with type/DPS/stats/restrictions, XP, money, reputation), ' +
+      'level, required level, side, start/end NPCs, and its quest chain (previous/next/final step). ' +
+      'rewardsStatus is "ok", "none" (quest gives no rewards), or "unavailable" (page could not be fetched).',
     {
       id: z.number().int().positive().describe('Wowhead quest ID (e.g. 7787 for "Rise, Thunderfury!")'),
       locale: z.union([z.string(), z.number()]).default(0).describe('Locale code or number (0 for English). Default: 0'),
+      includeItemInfo: z.boolean().default(true).describe('Attach structured stats (type, slot, DPS, stats, class/race restrictions) to each reward item. Default: true'),
     },
-    async ({ id, locale }) => {
+    async ({ id, locale, includeItemInfo }) => {
       try {
         const details = await client.getTooltip('quest', id, locale);
-        return jsonContent(details);
+        const items = details.rewards?.items;
+        if (!includeItemInfo || !items || items.length === 0) {
+          return jsonContent(details);
+        }
+        const infos = await client.getItemInfos(items.map((i) => i.id));
+        return jsonContent({
+          ...details,
+          rewards: {
+            ...details.rewards,
+            items: items.map((i) => ({ ...i, info: infos.get(i.id) })),
+          },
+        });
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // ── wowhead_list_zone_quests ───────────────────────────
+  server.tool(
+    'wowhead_list_zone_quests',
+    'List the quests of one or more Wowhead Forever zones with level, required level, side, XP, money, reputation, ' +
+      'item rewards/choices, and class/race restrictions. Filter by faction, level range, and completed quests ' +
+      '(pass ids from wow_character_completedQuests as excludeQuestIds). Zone IDs: e.g. 14 Durotar, 215 Mulgore, 17 The Barrens, 406 Stonetalon Mountains, 12 Elwynn Forest.',
+    {
+      zoneIds: z.array(z.number().int().positive()).min(1).max(10).describe('Wowhead zone IDs (e.g. [14, 215, 17])'),
+      faction: z.enum(['Alliance', 'Horde', 'Both']).optional().describe('Keep quests available to this faction'),
+      minQuestLevel: z.number().int().min(1).max(60).optional().describe('Minimum quest level'),
+      maxQuestLevel: z.number().int().min(1).max(60).optional().describe('Maximum quest level'),
+      maxRequiredLevel: z.number().int().min(1).max(60).optional().describe('Hide quests whose required level is above this (usually the character level)'),
+      className: z.string().optional().describe('Hide quests restricted to other classes (e.g. "shaman")'),
+      race: z.string().optional().describe('Hide quests restricted to other races (e.g. "Troll")'),
+      excludeQuestIds: z.array(z.number().int().positive()).optional().describe('Quest IDs to hide, e.g. already completed or in the quest log'),
+      onlyWithItemRewards: z.boolean().default(false).describe('Only quests that reward or offer items'),
+      limit: z.number().int().min(1).max(300).default(100).describe('Maximum quests to return (default: 100)'),
+    },
+    async ({ zoneIds, limit, ...filters }) => {
+      try {
+        const pages = await Promise.all(zoneIds.map((z) => client.getZoneQuests(z)));
+        const quests = filterZoneQuests(pages, filters);
+        return jsonContent({
+          zones: pages.map((p) => ({ zoneId: p.zoneId, zoneName: p.zoneName, totalQuests: p.quests.length })),
+          filters,
+          count: quests.length,
+          truncated: quests.length > limit,
+          quests: quests.slice(0, limit),
+        });
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // ── wowhead_find_quest_rewards ─────────────────────────
+  server.tool(
+    'wowhead_find_quest_rewards',
+    'Find quest reward items (weapons/armor) across Wowhead Forever zones that a character can use, sorted by usability then DPS. ' +
+      'Filters by class proficiency, race, character level, faction, item type/subclass, minimum DPS, and completed quests. ' +
+      'Optionally compares each candidate with the currently equipped item. Zone IDs: e.g. 14 Durotar, 215 Mulgore, 17 The Barrens.',
+    {
+      zoneIds: z.array(z.number().int().positive()).min(1).max(10).describe('Wowhead zone IDs to search (e.g. [14, 215, 17])'),
+      className: z.string().optional().describe('Character class for proficiency checks (e.g. "shaman")'),
+      race: z.string().optional().describe('Character race for race-restricted items/quests (e.g. "Troll")'),
+      characterLevel: z.number().int().min(1).max(60).optional().describe('Character level: hides quests/items above it'),
+      faction: z.enum(['Alliance', 'Horde', 'Both']).optional().describe('Character faction'),
+      itemClass: z.enum(['weapon', 'armor', 'any']).default('any').describe('Item category to search'),
+      subclasses: z.array(z.string()).optional().describe('Keep only these subclasses, e.g. ["Staff", "Dagger", "One-Handed Mace"]'),
+      minDps: z.number().min(0).optional().describe('Minimum weapon DPS'),
+      minQuestLevel: z.number().int().min(1).max(60).optional().describe('Minimum quest level'),
+      maxQuestLevel: z.number().int().min(1).max(60).optional().describe('Maximum quest level'),
+      excludeQuestIds: z.array(z.number().int().positive()).optional().describe('Quest IDs to skip (completed quests from wow_character_completedQuests)'),
+      compareToItemId: z.number().int().positive().optional().describe('Currently equipped item ID to compare against (DPS/stat deltas)'),
+      includeUnusable: z.boolean().default(false).describe('Also list items the character cannot use, with reasons'),
+      includeTalentGated: z.boolean().default(false).describe('Treat talent-unlocked weapon types (e.g. Shaman two-handed axes/maces) as usable'),
+      includeStats: z.boolean().default(true).describe('Fetch full stats/restrictions for returned items (one request per item)'),
+      limit: z.number().int().min(1).max(50).default(15).describe('Maximum candidates to return (default: 15)'),
+    },
+    async ({ zoneIds, compareToItemId, includeStats, limit, ...opts }) => {
+      try {
+        const pages = await Promise.all(zoneIds.map((z) => client.getZoneQuests(z)));
+        let candidates = findRewardCandidates(pages, opts);
+        const totalMatches = candidates.length;
+        // Over-fetch slightly: full stats can reveal class/race restrictions that drop candidates
+        candidates = candidates.slice(0, includeStats ? Math.min(limit * 2, 60) : limit);
+
+        let current: ItemInfo | undefined;
+        if (compareToItemId) current = await client.getItemInfo(compareToItemId);
+
+        if (includeStats || current) {
+          const infos = includeStats ? await client.getItemInfos(candidates.map((c) => c.item.id)) : new Map();
+          candidates = enrichCandidates(candidates, infos, opts, current);
+          if (!opts.includeUnusable) candidates = candidates.filter((c) => c.usable);
+        }
+
+        return jsonContent({
+          zones: pages.map((p) => ({ zoneId: p.zoneId, zoneName: p.zoneName })),
+          comparedTo: current ? { id: current.id, name: current.name, dps: current.dps, stats: current.stats } : undefined,
+          totalMatches,
+          count: Math.min(candidates.length, limit),
+          candidates: candidates.slice(0, limit),
+        });
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // ── wowhead_compare_items ──────────────────────────────
+  server.tool(
+    'wowhead_compare_items',
+    'Compare Wowhead Forever items against a currently equipped item: DPS, speed, armor, item level and stat deltas, ' +
+      'plus whether a given class/race/level can use each one.',
+    {
+      itemIds: z.array(z.number().int().positive()).min(1).max(20).describe('Candidate item IDs'),
+      compareToItemId: z.number().int().positive().describe('Currently equipped item ID'),
+      className: z.string().optional().describe('Character class for proficiency checks'),
+      race: z.string().optional().describe('Character race'),
+      characterLevel: z.number().int().min(1).max(60).optional().describe('Character level'),
+    },
+    async ({ itemIds, compareToItemId, className, race, characterLevel }) => {
+      try {
+        const infos = await client.getItemInfos([compareToItemId, ...itemIds]);
+        const current = infos.get(compareToItemId);
+        if (!current || 'error' in current) {
+          return errorContent(`Could not load item #${compareToItemId}: ${current && 'error' in current ? current.error : 'unknown error'}`);
+        }
+        const results = itemIds.map((id) => {
+          const info = infos.get(id);
+          if (!info || 'error' in info) return { itemId: id, error: info && 'error' in info ? info.error : 'not loaded' };
+          const usability = checkUsability(info, { className, race, level: characterLevel });
+          return {
+            item: info,
+            usable: usability.usable,
+            unusableReasons: usability.usable ? undefined : usability.reasons,
+            comparison: compareItems(info, current),
+          };
+        });
+        return jsonContent({ current, results });
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
@@ -456,6 +624,105 @@ export function registerWowheadTools(
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
+    },
+  );
+
+  // ── wowhead_set_session_token ─────────────────────────
+  server.tool(
+    'wowhead_set_session_token',
+    'Set or refresh the Wowhead aws-waf-token session cookie at runtime and optionally persist it to .env.',
+    {
+      token: z.string().min(10).describe('The aws-waf-token value or full cookie header string (e.g. "aws-waf-token=...") copied from browser cookies.'),
+      persistToEnv: z.boolean().default(true).describe('Whether to save the updated cookie to the local .env file so it persists across server restarts (default: true).'),
+    },
+    async ({ token, persistToEnv }) => {
+      try {
+        client.setCookie(token);
+
+        let savedToEnv = false;
+        if (persistToEnv) {
+          const envPath = path.resolve(process.cwd(), '.env');
+          const normalizedCookie = token.trim().startsWith('aws-waf-token=')
+            ? token.trim()
+            : `aws-waf-token=${token.trim()}`;
+          const newLine = `WOWHEAD_COOKIE="${normalizedCookie}"`;
+
+          if (fs.existsSync(envPath)) {
+            const content = fs.readFileSync(envPath, 'utf8');
+            if (/^WOWHEAD_COOKIE=.*$/m.test(content)) {
+              fs.writeFileSync(envPath, content.replace(/^WOWHEAD_COOKIE=.*$/m, newLine), 'utf8');
+            } else {
+              fs.writeFileSync(envPath, `${newLine}\n${content}`, 'utf8');
+            }
+          } else {
+            fs.writeFileSync(envPath, `${newLine}\n`, 'utf8');
+          }
+          savedToEnv = true;
+        }
+
+        return jsonContent({
+          success: true,
+          savedToEnv,
+          message: savedToEnv
+            ? 'Wowhead session cookie successfully updated and saved to .env.'
+            : 'Wowhead session cookie successfully updated for this MCP session.',
+        });
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // ── wowhead_get_session_status ────────────────────────
+  server.tool(
+    'wowhead_get_session_status',
+    'Check if an aws-waf-token cookie is currently configured and test if it is valid or expired against Wowhead.',
+    {
+      testConnection: z.boolean().default(false).describe('If true, performs a test probe to verify if the current token is valid or expired.'),
+    },
+    async ({ testConnection }) => {
+      const cookie = client.getCookie();
+      const hasCookie = Boolean(cookie && cookie.length > 0);
+
+      if (!hasCookie) {
+        return jsonContent({
+          status: 'missing',
+          hasCookie: false,
+          message: 'No aws-waf-token cookie is currently set. Provide one via wowhead_set_session_token or WOWHEAD_COOKIE in .env.',
+        });
+      }
+
+      if (testConnection) {
+        try {
+          // Probe a known Listview item page to test the token
+          await client.getItemSources(7298);
+          return jsonContent({
+            status: 'valid',
+            hasCookie: true,
+            cookiePrefix: `${cookie!.slice(0, 30)}...`,
+            message: 'Session token is active and successfully passed CloudFront/WAF verification.',
+          });
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const isExpired = errMsg.includes('[WAF_VERIFICATION_REQUIRED]') || errMsg.includes('verification required');
+          return jsonContent({
+            status: isExpired ? 'expired' : 'error',
+            hasCookie: true,
+            cookiePrefix: `${cookie!.slice(0, 30)}...`,
+            isExpired,
+            message: isExpired
+              ? 'The configured aws-waf-token has expired. Please refresh the token using wowhead_set_session_token.'
+              : `Connection test failed: ${errMsg}`,
+          });
+        }
+      }
+
+      return jsonContent({
+        status: 'configured',
+        hasCookie: true,
+        cookiePrefix: `${cookie!.slice(0, 30)}...`,
+        message: 'Session cookie is configured. Pass testConnection: true to actively probe validity.',
+      });
     },
   );
 }

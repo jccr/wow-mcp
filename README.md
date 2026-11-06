@@ -56,7 +56,10 @@ For personal and experimental use querying [World of Warcraft: Forever client da
 - `wowhead_lookup` — Quick one-shot lookup: searches by query and immediately returns formatted stats and tooltips for the top match
 - `wowhead_get_item` — Detailed item stats, level, damage, armor, effects, and tooltip by item ID
 - `wowhead_get_spell` — Spell description, cast time, mana cost, range, and buff info by spell ID
-- `wowhead_get_quest` — Quest objectives, requirements, and rewards by quest ID
+- `wowhead_get_quest` — Quest objectives, rewards (items with type/DPS/stats/restrictions, XP, money, reputation), level, side, start/end NPCs, quest chain, and a `rewardsStatus` of `ok`/`none`/`unavailable`
+- `wowhead_list_zone_quests` — Quests in one or more zones with levels, sides, rewards, and class/race restrictions; filter by faction, level, and completed quests
+- `wowhead_find_quest_rewards` — Quest reward weapons/armor across zones that a character can use (class proficiency, race, level), optionally compared against the equipped item
+- `wowhead_compare_items` — DPS, speed, armor, item level, and stat deltas of candidate items versus an equipped item, with usability checks
 - `wowhead_get_npc` — NPC name, level, classification (Boss, Elite), and tooltip by NPC ID
 - `wowhead_get_object` — Interactive game object details by object ID
 - `wowhead_get_zone` — Zone territory and recommended level range by zone ID

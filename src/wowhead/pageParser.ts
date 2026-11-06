@@ -24,6 +24,7 @@ export interface WowheadNpcSource {
 export interface WowheadVendorSource {
   id: number;
   name: string;
+  tag?: string; // e.g. "Weapons Merchant"
   cost?: number; // In copper
   costFormatted?: string;
   stock?: number;
@@ -125,14 +126,30 @@ function formatCopperMoney(copper?: number): string | undefined {
   return parts.join(' ');
 }
 
+/**
+ * Wowhead sold-by rows encode cost as `[[copper], [currencies], [items]]` (e.g. `[[3181]]`),
+ * older payloads as a plain number.
+ */
+function extractCopperCost(cost: unknown): number | undefined {
+  if (typeof cost === 'number') return cost;
+  if (Array.isArray(cost)) {
+    const first = cost[0];
+    if (typeof first === 'number') return first;
+    if (Array.isArray(first) && typeof first[0] === 'number') return first[0];
+  }
+  return undefined;
+}
+
 function normalizeVendorRow(row: Record<string, any>): WowheadVendorSource {
-  const cost = typeof row.cost === 'number' ? row.cost : typeof row.avail === 'number' ? row.avail : undefined;
+  const cost = extractCopperCost(row.cost);
   return {
     id: row.id,
     name: row.name ?? `Vendor #${row.id}`,
+    tag: typeof row.tag === 'string' ? row.tag : undefined,
     cost,
     costFormatted: formatCopperMoney(cost),
-    stock: typeof row.stock === 'number' ? row.stock : undefined,
+    // -1 means unlimited stock
+    stock: typeof row.stock === 'number' && row.stock >= 0 ? row.stock : undefined,
     location: Array.isArray(row.location) ? row.location : undefined,
     react: Array.isArray(row.react) ? [row.react[0], row.react[1]] : undefined,
   };
@@ -399,11 +416,21 @@ export function parseItemSources(html: string): ItemSourcesResult {
   const listviews = extractListviewsFromHtml(html);
   const foundKeys = Object.keys(listviews);
 
-  const droppedBy = listviews['dropped-by']?.map(normalizeNpcRow);
-  const skinnedFrom = listviews['skinned-from']?.map(normalizeNpcRow);
-  const minedFromObject = listviews['mined-from-object']?.map(normalizeNpcRow);
-  const gatheredFromObject = listviews['gathered-from-object']?.map(normalizeNpcRow);
-  const containedInObject = (listviews['contained-in-object'] ?? listviews['contained-in-item'] ?? listviews['contained-in'])?.map(normalizeNpcRow);
+  const droppedBy = listviews['dropped-by']
+    ?.filter((row) => (row.count === undefined || row.count >= 0) && (row.percent === undefined || row.percent >= 0))
+    .map(normalizeNpcRow);
+  const skinnedFrom = listviews['skinned-from']
+    ?.filter((row) => (row.count === undefined || row.count >= 0) && (row.percent === undefined || row.percent >= 0))
+    .map(normalizeNpcRow);
+  const minedFromObject = listviews['mined-from-object']
+    ?.filter((row) => (row.count === undefined || row.count >= 0) && (row.percent === undefined || row.percent >= 0))
+    .map(normalizeNpcRow);
+  const gatheredFromObject = listviews['gathered-from-object']
+    ?.filter((row) => (row.count === undefined || row.count >= 0) && (row.percent === undefined || row.percent >= 0))
+    .map(normalizeNpcRow);
+  const containedInObject = (listviews['contained-in-object'] ?? listviews['contained-in-item'] ?? listviews['contained-in'])
+    ?.filter((row) => (row.count === undefined || row.count >= 0) && (row.percent === undefined || row.percent >= 0))
+    .map(normalizeNpcRow);
   const soldBy = (listviews['sold-by'] ?? listviews['vendors'])?.map(normalizeVendorRow);
   const rewardFromQuests = (
     listviews['reward-from-q'] ??
@@ -493,7 +520,7 @@ export function parseItemXml(xml: string, itemId: number): ItemSourcesResult {
     } else if (s === 5) {
       // Vendor
       const vendors: WowheadVendorSource[] = sourcemore
-        .filter((sm) => sm.t === 1 && sm.ti)
+        .filter((sm) => (sm.t === 1 || !sm.t) && sm.ti)
         .map((sm) => ({
           id: sm.ti!,
           name: sm.n ?? `Vendor #${sm.ti}`,
@@ -502,9 +529,6 @@ export function parseItemXml(xml: string, itemId: number): ItemSourcesResult {
 
       if (vendors.length > 0) {
         result.soldBy = vendors;
-        result.rawListviewsFound.push('sold-by');
-      } else {
-        // Sold by vendors without specific sourcemore entry (e.g. standard weapon vendors)
         result.rawListviewsFound.push('sold-by');
       }
     } else if (s === 4) {
@@ -537,4 +561,225 @@ export function parseItemXml(xml: string, itemId: number): ItemSourcesResult {
   }
 
   return result;
+}
+
+export interface QuestChainStep {
+  position: number;
+  questId?: number; // absent for the current quest (rendered without a link)
+  name: string;
+  current: boolean;
+}
+
+export interface QuestInfo {
+  level?: number;
+  requiredLevel?: number;
+  side?: string;
+  startNpc?: { id: number; name: string };
+  endNpc?: { id: number; name: string };
+  sharable?: boolean;
+}
+
+export interface QuestPageDetails {
+  questId: number;
+  /** False when the HTML is not a real quest page (e.g. a WAF challenge body). */
+  isQuestPage: boolean;
+  items?: Array<{ id: number; name: string; choice?: boolean }>;
+  experience?: number;
+  moneyCopper?: number;
+  reputations?: Array<{ factionId: number; factionName: string; amount: number }>;
+  info?: QuestInfo;
+  chain?: {
+    steps: QuestChainStep[];
+    previousQuestId?: number;
+    nextQuestId?: number;
+    finalQuestId?: number;
+  };
+}
+
+/** Parses the quest series table (`<table class="series">`). */
+export function parseQuestChain(html: string, questId: number): QuestPageDetails['chain'] {
+  const tableMatch = html.match(/<table class="series">([\s\S]*?)<\/table>/);
+  if (!tableMatch) return undefined;
+
+  const steps: QuestChainStep[] = [];
+  const rowRegex = /<tr><th>(\d+)\.<\/th><td>([\s\S]*?)<\/td><\/tr>/g;
+  let m: RegExpExecArray | null;
+  while ((m = rowRegex.exec(tableMatch[1])) !== null) {
+    const position = Number(m[1]);
+    const cell = m[2];
+    const link = cell.match(/\/quest=(\d+)[^"]*">([^<]+)<\/a>/);
+    if (link) {
+      const id = Number(link[1]);
+      steps.push({ position, questId: id, name: link[2], current: id === questId });
+    } else {
+      const bold = cell.match(/<b>([^<]+)<\/b>/);
+      steps.push({ position, questId, name: bold?.[1] ?? '', current: true });
+    }
+  }
+  if (steps.length === 0) return undefined;
+
+  const idx = steps.findIndex((s) => s.current);
+  const last = steps[steps.length - 1];
+  return {
+    steps,
+    previousQuestId: idx > 0 ? steps[idx - 1].questId : undefined,
+    nextQuestId: idx >= 0 && idx < steps.length - 1 ? steps[idx + 1].questId : undefined,
+    finalQuestId: last.questId,
+  };
+}
+
+/** Parses the quest infobox markup (`WH.markup.printHtml("[ul][li]Level: 16[/li]...")`). */
+export function parseQuestInfobox(html: string): QuestInfo | undefined {
+  const match = html.match(/WH\.markup\.printHtml\("(\[ul\][\s\S]*?)",\s*"infobox-contents/);
+  if (!match) return undefined;
+  const markup = match[1].replace(/\\\//g, '/').replace(/\\"/g, '"');
+
+  const info: QuestInfo = {};
+  const level = markup.match(/\[li\]Level: (\d+)\[\/li\]/);
+  if (level) info.level = Number(level[1]);
+  const req = markup.match(/\[li\]Requires level (\d+)\[\/li\]/);
+  if (req) info.requiredLevel = Number(req[1]);
+  const side = markup.match(/\[li\]Side: (?:\[span[^\]]*\])?([^[]+)/);
+  if (side) info.side = side[1].trim();
+  const start = markup.match(/Start: \[url=\/[^\]]*npc=(\d+)[^\]]*\]([^[]+)\[\/url\]/);
+  if (start) info.startNpc = { id: Number(start[1]), name: start[2] };
+  const end = markup.match(/End: \[url=\/[^\]]*npc=(\d+)[^\]]*\]([^[]+)\[\/url\]/);
+  if (end) info.endNpc = { id: Number(end[1]), name: end[2] };
+  if (markup.includes('[li]Sharable[/li]')) info.sharable = true;
+  else if (markup.includes('[li]Not sharable[/li]')) info.sharable = false;
+
+  return Object.keys(info).length > 0 ? info : undefined;
+}
+
+/**
+ * Parses full HTML or page content for a Wowhead Quest page (/quest={id})
+ * to extract reward items, XP, money, reputation, infobox details and the quest chain.
+ */
+export function parseQuestPage(html: string, questId: number): QuestPageDetails {
+  const isQuestPage = /g_pageInfo\s*=\s*\{"type":5\b/.test(html) || html.includes('Rewards</h2>') || html.includes('class="series"');
+  const result: QuestPageDetails = { questId, isQuestPage };
+  result.info = parseQuestInfobox(html);
+  result.chain = parseQuestChain(html, questId);
+
+  const start = html.indexOf('Rewards</h2>');
+  if (start === -1) {
+    return result;
+  }
+
+  const end = html.indexOf("See if you've already completed this", start);
+  const rewardsHtml = html.substring(start, end !== -1 ? end : start + 3000);
+
+  const isChoice = rewardsHtml.includes('choose one of these rewards');
+
+  // Parse rewarded items from icontab tables or item links
+  const itemRegex = /href="\/forever\/item=(\d+)(?:\/[^"]*)?"[^>]*>([^<]+)<\/a>/g;
+  const items: Array<{ id: number; name: string; choice?: boolean }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = itemRegex.exec(rewardsHtml)) !== null) {
+    items.push({ id: Number(m[1]), name: m[2], choice: isChoice });
+  }
+  if (items.length > 0) {
+    result.items = items;
+  }
+
+  // Money: WH.Wow.Quest.setupScalingRewards({ ... "coin":{"rewardAtCap":0,"multiplier":1,"levels":{"16":800}} })
+  const coinMatch = rewardsHtml.match(/"coin":\{[^}]*"levels":\{"\d+":(\d+)\}/);
+  if (coinMatch) {
+    result.moneyCopper = Number(coinMatch[1]);
+  }
+
+  // XP: "xp":{"multiplier":...,"levels":{"16":1150}}
+  const xpMatch = rewardsHtml.match(/"xp":\{[^}]*"levels":\{"\d+":(\d+)\}/);
+  if (xpMatch) {
+    result.experience = Number(xpMatch[1]);
+  }
+
+  // Reputation: <span>100</span> reputation with <a href="/forever/faction=76/orgrimmar">Orgrimmar</a>
+  const repRegex = /<span>(\d+)<\/span>\s*reputation with\s*<a href="[^"]*\/faction=(\d+)[^"]*">([^<]+)<\/a>/g;
+  const reputations: Array<{ factionId: number; factionName: string; amount: number }> = [];
+  while ((m = repRegex.exec(rewardsHtml)) !== null) {
+    reputations.push({ amount: Number(m[1]), factionId: Number(m[2]), factionName: m[3] });
+  }
+  if (reputations.length > 0) {
+    result.reputations = reputations;
+  }
+
+  return result;
+}
+
+const SIDE_NAMES: Record<number, string> = { 1: 'Alliance', 2: 'Horde', 3: 'Both' };
+
+export interface ZoneQuest {
+  id: number;
+  name: string;
+  level?: number;
+  requiredLevel?: number;
+  side?: string;
+  experience?: number;
+  moneyCopper?: number;
+  /** Items always granted: [itemId, count]. */
+  itemRewards?: Array<{ id: number; count: number }>;
+  /** Pick-one choice items: [itemId, count]. */
+  itemChoices?: Array<{ id: number; count: number }>;
+  reputations?: Array<{ factionId: number; amount: number }>;
+  reqClassMask?: number;
+  reqRaceMask?: number;
+}
+
+export interface ZoneQuestsPage {
+  zoneId: number;
+  zoneName?: string;
+  isZonePage: boolean;
+  quests: ZoneQuest[];
+  /** Raw `quest-rewards` listview rows keyed by item id (type, subclass, dps, armor, reqlevel, reqrace). */
+  rewardItems: Record<number, Record<string, any>>;
+}
+
+function toPairs(value: unknown): Array<{ id: number; count: number }> | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const pairs = value
+    .filter((p): p is [number, number] => Array.isArray(p) && typeof p[0] === 'number')
+    .map(([id, count]) => ({ id, count: typeof count === 'number' ? count : 1 }));
+  return pairs.length > 0 ? pairs : undefined;
+}
+
+/** Parses a Wowhead zone page (/zone={id}) for its `quests` and `quest-rewards` listviews. */
+export function parseZoneQuests(html: string, zoneId: number): ZoneQuestsPage {
+  const pageInfo = html.match(/g_pageInfo\s*=\s*(\{[^}]*\})/);
+  let zoneName: string | undefined;
+  let isZonePage = false;
+  if (pageInfo) {
+    try {
+      const info = JSON.parse(pageInfo[1]);
+      isZonePage = info.type === 7;
+      zoneName = info.name;
+    } catch {
+      // ignore malformed page info
+    }
+  }
+
+  const listviews = extractListviewsFromHtml(html);
+  if (listviews['quests']) isZonePage = true;
+
+  const quests: ZoneQuest[] = (listviews['quests'] ?? []).map((row) => ({
+    id: row.id,
+    name: row.name ?? `Quest #${row.id}`,
+    level: typeof row.level === 'number' && row.level > 0 ? row.level : undefined,
+    requiredLevel: typeof row.reqlevel === 'number' ? row.reqlevel : undefined,
+    side: typeof row.side === 'number' ? SIDE_NAMES[row.side] : undefined,
+    experience: typeof row.xp === 'number' ? row.xp : undefined,
+    moneyCopper: typeof row.money === 'number' && row.money > 0 ? row.money : undefined,
+    itemRewards: toPairs(row.itemrewards),
+    itemChoices: toPairs(row.itemchoices),
+    reputations: toPairs(row.reprewards)?.map((p) => ({ factionId: p.id, amount: p.count })),
+    reqClassMask: typeof row.reqclass === 'number' && row.reqclass > 0 ? row.reqclass : undefined,
+    reqRaceMask: typeof row.reqrace === 'number' && row.reqrace > 0 ? row.reqrace : undefined,
+  }));
+
+  const rewardItems: Record<number, Record<string, any>> = {};
+  for (const row of listviews['quest-rewards'] ?? []) {
+    if (typeof row.id === 'number') rewardItems[row.id] = row;
+  }
+
+  return { zoneId, zoneName, isZonePage, quests, rewardItems };
 }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { QuestInfo, QuestPageDetails } from './pageParser.js';
 
 export type WowheadEntityType =
   | 'item'
@@ -105,4 +106,16 @@ export interface WowheadEntityDetails {
   url: string;
   spells?: unknown;
   map?: Record<string, unknown>;
+  /** Quests only: 'ok' = rewards parsed, 'none' = page has no rewards, 'unavailable' = page could not be fetched. */
+  rewardsStatus?: 'ok' | 'none' | 'unavailable';
+  rewards?: {
+    items?: Array<{ id: number; name: string; choice?: boolean; info?: unknown }>;
+    experience?: number;
+    moneyCopper?: number;
+    reputations?: Array<{ factionId: number; factionName: string; amount: number }>;
+  };
+  /** Quests only: level, required level, side, start/end NPCs from the quest page infobox. */
+  questInfo?: QuestInfo;
+  /** Quests only: the quest series this quest belongs to. */
+  chain?: QuestPageDetails['chain'];
 }
