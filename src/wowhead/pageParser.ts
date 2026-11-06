@@ -429,3 +429,107 @@ export function parseItemSources(html: string): ItemSourcesResult {
     rawListviewsFound: foundKeys,
   };
 }
+
+/**
+ * Parses Wowhead's official unblocked XML payload (`/item={id}&xml`).
+ * Extracts real structured sources: droppedBy, soldBy, rewardFromQuests, craftedBy.
+ */
+export function parseItemXml(xml: string, itemId: number): ItemSourcesResult {
+  const result: ItemSourcesResult = {
+    itemId,
+    rawListviewsFound: [],
+  };
+
+  const jsonMatch = xml.match(/<json><!\[CDATA\[([\s\S]*?)\]\]><\/json>/);
+  if (!jsonMatch) return result;
+
+  let data: Record<string, any>;
+  try {
+    const raw = jsonMatch[1].trim();
+    const wrapped = raw.startsWith('{') ? raw : `{${raw}}`;
+    data = JSON.parse(wrapped);
+  } catch {
+    return result;
+  }
+
+  // Check htmlTooltip for exact inline drop chance if present
+  let dropChancePercent: number | undefined;
+  const tooltipMatch = xml.match(/<htmlTooltip><!\[CDATA\[([\s\S]*?)\]\]><\/htmlTooltip>/);
+  if (tooltipMatch) {
+    const chanceMatch = tooltipMatch[1].match(/Drop Chance:\s*([0-9.]+)%/i);
+    if (chanceMatch) {
+      dropChancePercent = parseFloat(chanceMatch[1]);
+    }
+  }
+
+  const sources: number[] = Array.isArray(data.source) ? data.source : [];
+  const sourcemore: Array<{ n?: string; t?: number; ti?: number; z?: number }> = Array.isArray(data.sourcemore)
+    ? data.sourcemore
+    : [];
+
+  // Source Types in Wowhead data model:
+  // 1 = Crafted, 2 = Drop, 3 = PvP, 4 = Quest, 5 = Vendor
+  for (const s of sources) {
+    if (s === 2) {
+      // Drop
+      const drops: WowheadNpcSource[] = sourcemore
+        .filter((sm) => sm.t === 1 && sm.ti)
+        .map((sm) => ({
+          id: sm.ti!,
+          name: sm.n ?? `NPC #${sm.ti}`,
+          location: sm.z ? [sm.z] : undefined,
+          dropRatePercent: dropChancePercent,
+        }));
+
+      if (drops.length > 0) {
+        result.droppedBy = drops;
+        result.rawListviewsFound.push('dropped-by');
+      }
+    } else if (s === 5) {
+      // Vendor
+      const vendors: WowheadVendorSource[] = sourcemore
+        .filter((sm) => sm.t === 1 && sm.ti)
+        .map((sm) => ({
+          id: sm.ti!,
+          name: sm.n ?? `Vendor #${sm.ti}`,
+          location: sm.z ? [sm.z] : undefined,
+        }));
+
+      if (vendors.length > 0) {
+        result.soldBy = vendors;
+        result.rawListviewsFound.push('sold-by');
+      } else {
+        // Sold by vendors without specific sourcemore entry (e.g. standard weapon vendors)
+        result.rawListviewsFound.push('sold-by');
+      }
+    } else if (s === 4) {
+      // Quest reward
+      const quests: WowheadQuestSource[] = sourcemore
+        .filter((sm) => sm.t === 5 && sm.ti)
+        .map((sm) => ({
+          id: sm.ti!,
+          name: sm.n ?? `Quest #${sm.ti}`,
+        }));
+
+      if (quests.length > 0) {
+        result.rewardFromQuests = quests;
+        result.rawListviewsFound.push('reward-from-quests');
+      }
+    } else if (s === 1) {
+      // Crafted
+      const crafted: WowheadCraftingSource[] = sourcemore
+        .filter((sm) => sm.ti)
+        .map((sm) => ({
+          id: sm.ti!,
+          name: sm.n ?? `Recipe #${sm.ti}`,
+        }));
+
+      if (crafted.length > 0) {
+        result.craftedBy = crafted;
+        result.rawListviewsFound.push('crafted-by');
+      }
+    }
+  }
+
+  return result;
+}

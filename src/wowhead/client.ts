@@ -8,7 +8,7 @@ import {
   type WowheadEntityDetails,
 } from './types.js';
 import { formatTooltip, getQualityName } from './formatter.js';
-import { parseItemSources, type ItemSourcesResult } from './pageParser.js';
+import { parseItemSources, parseItemXml, type ItemSourcesResult } from './pageParser.js';
 import { logger } from '../util/logger.js';
 
 export const WOWHEAD_FOREVER_DATA_ENV = 16;
@@ -154,9 +154,10 @@ export class WowheadForeverClient {
   }
 
   /**
-   * Reads and parses item drop and skinning sources.
-   * Checks for locally saved snapshot file in data/pages/item-{id}.html first,
-   * or attempts to fetch with session credentials if provided.
+   * Reads and parses item drop, vendor, crafting, and quest sources.
+   * Checks for locally saved snapshot file in data/pages/item-{id}.html first.
+   * If not found, fetches Wowhead's official unblocked XML payload (/item={id}&xml)
+   * which provides structured real drops, vendors, and quest linkages.
    */
   public async getItemSources(itemId: number): Promise<ItemSourcesResult> {
     const cacheKey = `sources:item:${itemId}`;
@@ -184,7 +185,23 @@ export class WowheadForeverClient {
       }
     }
 
-    // 2. Fetch page directly if cookies are configured
+    // 2. Fetch Wowhead's official XML endpoint (/item={id}&xml) which is unblocked by CloudFront
+    // and returns structured data for drops, vendors, quest rewards, and crafting recipes.
+    const xmlUrl = `https://www.wowhead.com/forever/item=${itemId}&xml`;
+    try {
+      const xmlRes = await this.http.get(xmlUrl);
+      if (xmlRes.statusCode === 200 && xmlRes.body.includes('<wowhead>')) {
+        const parsedXml = parseItemXml(xmlRes.body, itemId);
+        if (parsedXml.rawListviewsFound.length > 0) {
+          this.setCached(cacheKey, parsedXml);
+          return parsedXml;
+        }
+      }
+    } catch (err) {
+      logger.debug({ err, itemId }, 'XML endpoint lookup failed, falling back to full HTML fetch');
+    }
+
+    // 3. Fallback: fetch HTML page directly if cookies are configured
     const url = `https://www.wowhead.com/forever/item=${itemId}`;
     try {
       const response = await this.http.get(url);
@@ -254,6 +271,50 @@ export class WowheadForeverClient {
       breadcrumb: r.pinBreadcrumb,
       url: this.getWebUrl(r.typeName, r.id),
     }));
+
+    // If query starts with common prepositions/stopwords (e.g. "of Orgrimmar", "the Deadmines")
+    // and returns no items, query Wowhead with common noun prefixes live
+    const hasItems = mapped.some((m) => m.typeName === 'Item');
+    const stopwordMatch = trimmed.match(/^(?:of|the|in|for)\s+(.+)$/i);
+    if ((mapped.length === 0 || !hasItems || options.entityType === 'item') && stopwordMatch) {
+      const noun = stopwordMatch[1];
+      const prefixes = ['Staff', 'Axe', 'Kris', 'Hammer', 'Sword', 'Shield', 'Bow', 'Ring', 'Dagger', 'Mace', 'Boots', 'Vest', 'Robes'];
+      const expandedItems = new Map<number, SearchResultItem>();
+
+      await Promise.all(
+        prefixes.map(async (prefix) => {
+          const expUrl = `https://www.wowhead.com/forever/search/suggestions-template?q=${encodeURIComponent(prefix + ' ' + noun)}`;
+          try {
+            const expRes = await this.http.get(expUrl).json<WowheadSuggestionsResponse>();
+            for (const r of expRes.results ?? []) {
+              if (r.name.toLowerCase().includes(trimmed.toLowerCase())) {
+                expandedItems.set(r.id, {
+                  id: r.id,
+                  type: r.type,
+                  typeName: r.typeName,
+                  name: r.name,
+                  icon: r.icon,
+                  quality: r.quality,
+                  qualityName: getQualityName(r.quality),
+                  description: r.pinDescription,
+                  footerText: r.pinFooterText,
+                  breadcrumb: r.pinBreadcrumb,
+                  url: this.getWebUrl(r.typeName, r.id),
+                });
+              }
+            }
+          } catch {
+            // Ignore failure on expansion branch
+          }
+        })
+      );
+
+      if (expandedItems.size > 0) {
+        const combined = [...expandedItems.values(), ...mapped];
+        this.setCached(cacheKey, combined.slice(0, limit));
+        return combined.slice(0, limit);
+      }
+    }
 
     this.setCached(cacheKey, mapped);
     return mapped;
