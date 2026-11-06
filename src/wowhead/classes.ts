@@ -8,6 +8,17 @@ export interface WowheadClassSpec {
   role: 'DPS' | 'Healer' | 'Tank';
   icon: string;
   description: string;
+  talents?: Array<{
+    id: number;
+    name: string;
+    icon: string;
+    row: number;
+    col: number;
+    maxRank: number;
+    rankSpellIds: number[];
+    descriptions: Record<string, string>;
+    requiredPoints: number;
+  }>;
 }
 
 export interface WowheadClassDefinition {

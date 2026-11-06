@@ -289,12 +289,13 @@ export function registerWowheadTools(
   // ── wowhead_get_class ─────────────────────────────────
   server.tool(
     'wowhead_get_class',
-    'Fetch class profile, available specs, roles, armor/weapon proficiencies, resources, and races from Wowhead Forever.',
+    'Fetch class profile, proficiencies, combat roles, specs, talent trees, and baseline/spec ability spell IDs from Wowhead Forever.',
     {
       classIdentifier: z.union([z.string(), z.number()]).describe('Class name, slug, or ID (e.g. "shaman", "paladin", 7, "Warrior")'),
-      includeSpellIds: z.boolean().default(false).describe('If true, fetches and includes the list of associated baseline spell IDs from Wowhead spec-spells database'),
+      includeTalents: z.boolean().default(false).describe('If true, fetches and parses the full talent tree (rows, columns, ranks, descriptions) for each spec'),
+      includeSpellIds: z.boolean().default(false).describe('If true, fetches and includes the list of associated baseline and spec ability spell IDs from Wowhead'),
     },
-    async ({ classIdentifier, includeSpellIds }) => {
+    async ({ classIdentifier, includeTalents, includeSpellIds }) => {
       try {
         const classDef = findClass(classIdentifier);
         if (!classDef) {
@@ -316,8 +317,37 @@ export function registerWowheadTools(
           }
         }
 
+        let enrichedSpecs = classDef.specs;
+        if (includeTalents) {
+          try {
+            const talentsData = await dataClient.getTalentTrees();
+            enrichedSpecs = classDef.specs.map(spec => {
+              const specTalentsMap = talentsData[String(spec.id)] ?? {};
+              const talents = Object.values(specTalentsMap).map((t: any) => ({
+                id: t.id,
+                name: t.name,
+                icon: t.icon,
+                row: t.row,
+                col: t.col,
+                maxRank: Array.isArray(t.ranks) ? t.ranks.length : 1,
+                rankSpellIds: Array.isArray(t.ranks) ? t.ranks : [],
+                descriptions: t.descriptions ?? {},
+                requiredPoints: t.requiredPoints ?? 0,
+              })).sort((a, b) => a.row !== b.row ? a.row - b.row : a.col - b.col);
+
+              return {
+                ...spec,
+                talents,
+              };
+            });
+          } catch {
+            // Best effort for talents
+          }
+        }
+
         return jsonContent({
           ...classDef,
+          specs: enrichedSpecs,
           baselineSpellCount: baselineSpells?.length,
           baselineSpells: includeSpellIds ? baselineSpells : undefined,
           specSpells: includeSpellIds ? specSpells : undefined,

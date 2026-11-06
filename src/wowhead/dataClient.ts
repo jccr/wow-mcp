@@ -38,6 +38,23 @@ export class WowheadDataClient {
   }
 
   /**
+   * Fetches Wowhead's full talents database across all specs for WoW: Forever.
+   */
+  public async getTalentTrees(): Promise<Record<string, Record<string, any>>> {
+    const url = 'https://nether.wowhead.com/forever/data/talents-classic?dv=34&db=1793836334';
+    const res = await this.http.get(url);
+    const prefix = 'WH.setPageData("wow.talentCalcClassic.classicplus.data",';
+    const startIdx = res.body.indexOf(prefix);
+    if (startIdx === -1) {
+      throw new Error('Talent dataset header not found in Wowhead response');
+    }
+    const jsonStart = startIdx + prefix.length;
+    const jsonEnd = res.body.indexOf(');', jsonStart);
+    const parsed = JSON.parse(res.body.slice(jsonStart, jsonEnd));
+    return parsed.talents ?? {};
+  }
+
+  /**
    * Fetches Wowhead's global item stat-scaling matrix (ilvl, budget allocations, curves).
    */
   public async getItemScaling(): Promise<Record<string, any>> {
