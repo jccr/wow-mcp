@@ -405,7 +405,12 @@ export function parseItemSources(html: string): ItemSourcesResult {
   const gatheredFromObject = listviews['gathered-from-object']?.map(normalizeNpcRow);
   const containedInObject = (listviews['contained-in-object'] ?? listviews['contained-in-item'] ?? listviews['contained-in'])?.map(normalizeNpcRow);
   const soldBy = (listviews['sold-by'] ?? listviews['vendors'])?.map(normalizeVendorRow);
-  const rewardFromQuests = (listviews['reward-of-quest'] ?? listviews['reward-from-quests'])?.map(normalizeQuestRow);
+  const rewardFromQuests = (
+    listviews['reward-from-q'] ??
+    listviews['reward-from-quests'] ??
+    listviews['reward-of-quest'] ??
+    listviews['reward-from']
+  )?.map(normalizeQuestRow);
   const craftedBy = (listviews['crafted-by'] ?? listviews['created-by'])?.map(normalizeCraftingRow);
   const reagentFor = (listviews['reagent-for'] ?? listviews['used-in-recipe'])?.map(normalizeReagentForRow);
   const canBePlacedIn = (listviews['can-be-placed-in'] ?? listviews['placed-in'])?.map(normalizeContainerRow);
