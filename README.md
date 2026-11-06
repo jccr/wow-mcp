@@ -76,7 +76,9 @@ Every tool also accepts:
 
 Retail-only tools (covenants, soulbinds, azerite, Mythic+, housing, heirlooms, etc.) return an error when `game` is not `retail`.
 
-> **Forever caveats (as of launch):** public character lookups (`/profile/wow/character/...`) reportedly still 404, and `dynamic-forever-*` (auctions, realms) reportedly returns 403. Account-level profile data (`/profile/user/wow`, i.e. the `wow_account_*` tools) reportedly works under `profile-forever-{region}` once you log in.
+**Forever characters** have a surname instead of a realm, and Blizzard addresses them as `/profile/wow/character/{name}-{surname}` with no realm in the path. For `wow_character_*` tools with `game: "forever"`, leave out `realmSlug` and either pass `characterName: "doja-zap"` or pass `characterName: "Doja"` with `surname: "Zap"`. `wow_account_profileSummary` lists each character's name and surname. `realmSlug` is still required for retail and classic.
+
+> **Forever caveats (as of launch):** `dynamic-forever-*` (auctions, realms) reportedly returns 403. Character lookups work with the `{name}-{surname}` form above, and account-level profile data (`/profile/user/wow`, i.e. the `wow_account_*` tools) works under `profile-forever-{region}` once you log in.
 
 ## Battle.net user login
 

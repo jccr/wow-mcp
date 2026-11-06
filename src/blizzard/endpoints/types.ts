@@ -125,11 +125,60 @@ export const localeSchema = z
   .default('en_US')
   .describe('Response locale (e.g. "en_US", "es_MX", "pt_BR", "de_DE", "fr_FR", "ko_KR"). Default: "en_US"');
 
-/** Shared character input params. */
+/**
+ * Shared character input params.
+ *
+ * Retail/Classic characters are addressed by realm + name. WoW: Forever
+ * characters have a surname instead of a realm and are addressed by the slug
+ * "{name}-{surname}" (e.g. "doja-zap"), with no realm in the path.
+ */
 export const characterParams = {
-  realmSlug: slug('Realm slug (lowercase, hyphenated). Example: "tichondrius", "area-52"'),
-  characterName: slug('Character name (case-insensitive)'),
+  realmSlug: slug(
+    'Realm slug (lowercase, hyphenated). Example: "tichondrius", "area-52". Required for retail and classic; not used for Forever.',
+  ).optional(),
+  characterName: slug(
+    'Character name (case-insensitive). For Forever, either pass "name-surname" (e.g. "doja-zap") or pass the name and set surname.',
+  ),
+  surname: slug(
+    'Forever only: the character\'s surname (e.g. "Zap"). Combined with characterName into the "name-surname" slug.',
+  ).optional(),
 };
+
+const CHARACTER_PATH_PREFIX = 'profile/wow/character/{realmSlug}/{characterName}';
+
+/**
+ * Builds a character profile path for any game version.
+ * Forever: `profile/wow/character/{name-surname}/...` (no realm).
+ * Retail/Classic: `profile/wow/character/{realm}/{name}/...`.
+ */
+export function buildCharacterPath(
+  template: string,
+  params: Record<string, unknown>,
+  game: GameFlavor,
+): string {
+  if (!template.startsWith(CHARACTER_PATH_PREFIX)) return buildPath(template, params);
+
+  const name = params['characterName'];
+  if (typeof name !== 'string' || !name) {
+    throw new Error('Missing required parameter: characterName');
+  }
+  const rest = template.slice(CHARACTER_PATH_PREFIX.length);
+
+  if (game === 'forever') {
+    const surname = params['surname'];
+    const characterSlug =
+      typeof surname === 'string' && surname ? `${name}-${surname}` : name;
+    return buildPath(`profile/wow/character/{characterSlug}${rest}`, {
+      ...params,
+      characterSlug,
+    });
+  }
+
+  if (params['realmSlug'] == null || params['realmSlug'] === '') {
+    throw new Error(`realmSlug is required for ${game} characters.`);
+  }
+  return buildPath(template, params);
+}
 
 /** Shared guild input params. */
 export const guildParams = {

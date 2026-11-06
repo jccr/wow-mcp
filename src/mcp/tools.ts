@@ -7,7 +7,7 @@ import { accountEndpoints } from '../blizzard/endpoints/accountEndpoints.js';
 import { createLoginUrl, getUserToken, clearUserToken } from '../blizzard/userAuth.js';
 import {
   type EndpointDef,
-  buildPath,
+  buildCharacterPath,
   resolveNamespace,
   isRetailOnly,
   regionSchema,
@@ -79,7 +79,7 @@ function registerEndpoint(
             `${ep.toolName} is only available for retail WoW, not "${game}".`,
           );
         }
-        const path = buildPath(ep.path, args);
+        const path = buildCharacterPath(ep.path, args, game);
         const namespace = resolveNamespace(
           ep.namespace,
           region,
@@ -191,20 +191,17 @@ function registerCustomTools(
         'Builds a chronologically sorted timeline of completed achievements for a character. Includes earliest/latest completion dates and total count. This is a computed view — not a raw Blizzard endpoint.',
       inputSchema: characterInputSchema,
     },
-    async ({ realmSlug, characterName, region, locale, game, namespace: nsOverride }) => {
+    async ({ realmSlug, characterName, surname, region, locale, game, namespace: nsOverride }) => {
       try {
         const r = (region ?? 'us') as Region;
         const l = (locale ?? 'en_US') as string;
-        const path = buildPath(
+        const g = (game ?? 'retail') as GameFlavor;
+        const path = buildCharacterPath(
           'profile/wow/character/{realmSlug}/{characterName}/achievements',
-          { realmSlug, characterName },
+          { realmSlug, characterName, surname },
+          g,
         );
-        const namespace = resolveNamespace(
-          'profile',
-          r,
-          (game ?? 'retail') as GameFlavor,
-          nsOverride as string | undefined,
-        );
+        const namespace = resolveNamespace('profile', r, g, nsOverride as string | undefined);
         const raw = await client.request<unknown>(path, {
           region: r,
           namespace,
