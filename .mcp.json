@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "wow": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "--env-file=C:/Users/jccr/Projects/wow-ai/project/.env",
+        "C:/Users/jccr/Projects/wow-ai/project/dist/stdio.js"
+      ]
+    },
+    "everloot": {
+      "type": "http",
+      "url": "https://everloot.app/mcp/public"
+    },
+    "wowhead-forever": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/jccr/Projects/wow-ai/project/dist/wowheadStdio.js"
+      ]
+    }
+  }
+}

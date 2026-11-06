@@ -5,7 +5,8 @@
   "type": "module",
   "private": true,
   "bin": {
-    "mcp-wow-profile": "./dist/index.js"
+    "mcp-wow-profile": "./dist/index.js",
+    "mcp-wowhead-forever": "./dist/wowheadStdio.js"
   },
   "files": [
     "dist"
@@ -15,7 +16,9 @@
     "watch": "tsc --watch",
     "start": "node dist/index.js",
     "start:stdio": "node dist/stdio.js",
+    "start:wowhead": "node dist/wowheadStdio.js",
     "dev": "tsx src/index.ts",
+    "dev:wowhead": "tsx src/wowheadStdio.ts",
     "inspect": "npx @modelcontextprotocol/inspector dist/index.js",
     "lint": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts"

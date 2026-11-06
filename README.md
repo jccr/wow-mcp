@@ -19,7 +19,11 @@ npm run start:stdio  # stdio transport (for clients that launch the server)
 
 ### Launching from an MCP client (stdio)
 
-`dist/stdio.js` speaks MCP over stdin/stdout, so clients like Claude Code can start and stop the server themselves. It also starts the HTTP listener (best-effort) so the [Battle.net login](#battlenet-user-login) callback still works. Node doesn't load `.env` on its own, so pass it with `--env-file`. Example `.mcp.json`:
+`dist/stdio.js` speaks MCP over stdin/stdout, so clients like Claude Code can start and stop the server themselves. It also starts the HTTP listener (best-effort) so the [Battle.net login](#battlenet-user-login) callback still works. Node doesn't load `.env` on its own, so pass it with `--env-file`.
+
+You can also launch the dedicated **Wowhead Forever MCP server** (`dist/wowheadStdio.js`) for datamined client tooltips, stats, item scaling, and entity search.
+
+Example `.mcp.json`:
 
 ```json
 {
@@ -28,10 +32,36 @@ npm run start:stdio  # stdio transport (for clients that launch the server)
       "type": "stdio",
       "command": "node",
       "args": ["--env-file=/path/to/wow-mcp/.env", "/path/to/wow-mcp/dist/stdio.js"]
+    },
+    "wowhead-forever": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/path/to/wow-mcp/dist/wowheadStdio.js"]
     }
   }
 }
 ```
+
+## Wowhead Forever MCP Server
+
+For personal and experimental use querying [World of Warcraft: Forever client database](https://www.wowhead.com/forever):
+
+- Automated Chrome browser User-Agent & `sec-ch-ua` headers masking
+- Queries Wowhead Forever's `dataEnv: 16`
+- Built-in TTL response caching
+- Tooltip parser that converts raw HTML tooltips into clean Markdown with stats, requirements, damage/speed, and sell price
+
+### Tools available:
+- `wowhead_search` — Search entities (items, spells, quests, NPCs, objects, zones, guides, classes) with optional type filtering and limits
+- `wowhead_lookup` — Quick one-shot lookup: searches by query and immediately returns formatted stats and tooltips for the top match
+- `wowhead_get_item` — Detailed item stats, level, damage, armor, effects, and tooltip by item ID
+- `wowhead_get_spell` — Spell description, cast time, mana cost, range, and buff info by spell ID
+- `wowhead_get_quest` — Quest objectives, requirements, and rewards by quest ID
+- `wowhead_get_npc` — NPC name, level, classification (Boss, Elite), and tooltip by NPC ID
+- `wowhead_get_object` — Interactive game object details by object ID
+- `wowhead_get_zone` — Zone territory and recommended level range by zone ID
+- `wowhead_get_item_set` — Set pieces and tier bonuses by item set ID
+- `wowhead_get_tooltip` — Generic tooltip fetcher for any supported Wowhead Forever entity type
 
 ### Development
 
@@ -180,6 +210,13 @@ src/
   mcp/
     tools.ts                        # auto-registers all endpoints + custom tools
     schemas.ts                      # shared zod input schemas
+  wowhead/
+    client.ts                       # Wowhead Forever client with Chrome UA & dataEnv 16
+    formatter.ts                    # Tooltip HTML to clean Markdown formatter
+    tools.ts                        # MCP tools for Wowhead Forever
+    server.ts                       # Wowhead McpServer factory
+    types.ts                        # Entity, suggestion, and tooltip types
+  wowheadStdio.ts                   # stdio entry point for Wowhead Forever MCP server
   blizzard/
     tokenManager.ts                 # OAuth client-credentials + single-flight
     userAuth.ts                     # Battle.net user login (authorization code) + /bnet/callback
