@@ -108,7 +108,8 @@ export function registerWowheadTools(
         'sold-by',
         'crafted-by',
         'reward-from-quests',
-      ]).default('all').describe('Optional filter for specific relation category: "dropped-by", "contained-in", "skinned-from", "reagent-for", "can-be-placed-in", "see-also", or "all"'),
+        'comments',
+      ]).default('all').describe('Optional filter for specific relation category: "dropped-by", "contained-in", "skinned-from", "reagent-for", "can-be-placed-in", "see-also", "comments", or "all"'),
     },
     async ({ id, section }) => {
       try {
@@ -145,6 +146,9 @@ export function registerWowheadTools(
             break;
           case 'reward-from-quests':
             filtered['rewardFromQuests'] = sources.rewardFromQuests;
+            break;
+          case 'comments':
+            filtered['comments'] = sources.comments;
             break;
         }
         return jsonContent(filtered);

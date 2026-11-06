@@ -76,6 +76,15 @@ export interface WowheadSeeAlsoItem {
   description?: string;
 }
 
+export interface WowheadComment {
+  id: number;
+  date?: string;
+  rating?: number;
+  user?: string;
+  body: string;
+  replies?: WowheadComment[];
+}
+
 export interface ItemSourcesResult {
   itemId?: number;
   droppedBy?: WowheadNpcSource[];
@@ -89,6 +98,7 @@ export interface ItemSourcesResult {
   reagentFor?: WowheadReagentForSource[];
   canBePlacedIn?: WowheadContainerSource[];
   seeAlso?: WowheadSeeAlsoItem[];
+  comments?: WowheadComment[];
   rawListviewsFound: string[];
 }
 
@@ -211,8 +221,99 @@ function normalizeNpcRow(row: Record<string, any>): WowheadNpcSource {
 }
 
 /**
- * Extracts all `new Listview({ id: '...', data: [...] })` JSON payloads from page text or HTML.
+ * Extracts community comments (e.g. lv_comments0 = [ ... ] or var lv_comments = [ ... ]).
  */
+export function extractCommentsFromHtml(html: string): WowheadComment[] {
+  const comments: WowheadComment[] = [];
+
+  // Match: lv_comments[0-9]*\s*=\s*(\[[\s\S]*?\]);
+  const commentVarRegex = /(?:var\s+)?lv_comments\w*\s*=\s*/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = commentVarRegex.exec(html)) !== null) {
+    const startIdx = match.index + match[0].length;
+    if (html[startIdx] !== '[') continue;
+
+    let depth = 0;
+    let inString: string | null = null;
+    let endIdx = -1;
+
+    for (let i = startIdx; i < html.length; i++) {
+      const char = html[i];
+      const prev = html[i - 1];
+
+      if (inString) {
+        if (char === inString && prev !== '\\') {
+          inString = null;
+        }
+        continue;
+      }
+
+      if (char === '"' || char === "'") {
+        inString = char;
+      } else if (char === '[') {
+        depth++;
+      } else if (char === ']') {
+        depth--;
+        if (depth === 0) {
+          endIdx = i + 1;
+          break;
+        }
+      }
+    }
+
+    if (endIdx === -1) continue;
+
+    const rawArray = html.slice(startIdx, endIdx);
+    try {
+      let parsed: any[];
+      try {
+        parsed = JSON.parse(rawArray);
+      } catch {
+        parsed = Function(`"use strict"; return (${rawArray});`)();
+      }
+
+      if (Array.isArray(parsed)) {
+        for (const c of parsed) {
+          const rawBody = c.body ?? c.comment ?? '';
+          // Strip inner HTML / bbcode tags for clean readable text
+          const cleanBody = rawBody
+            .replace(/<[^>]+>/g, '')
+            .replace(/\[\/?(?:b|i|u|url|item|spell|color)[^\]]*\]/gi, '')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/&amp;/g, '&')
+            .trim();
+
+          const replies: WowheadComment[] = Array.isArray(c.replies)
+            ? c.replies.map((r: any) => ({
+                id: r.id,
+                date: r.date,
+                rating: r.rating,
+                user: r.user,
+                body: (r.body ?? '').replace(/<[^>]+>/g, '').trim(),
+              }))
+            : undefined;
+
+          comments.push({
+            id: c.id,
+            date: c.date,
+            rating: c.rating,
+            user: c.user,
+            body: cleanBody,
+            replies,
+          });
+        }
+      }
+    } catch {
+      // Ignore unparseable blocks
+    }
+  }
+
+  // Sort by rating descending (highest community upvotes first)
+  return comments.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+}
 export function extractListviewsFromHtml(html: string): Record<string, any[]> {
   const result: Record<string, any[]> = {};
 
@@ -310,6 +411,8 @@ export function parseItemSources(html: string): ItemSourcesResult {
   const canBePlacedIn = (listviews['can-be-placed-in'] ?? listviews['placed-in'])?.map(normalizeContainerRow);
   const seeAlso = (listviews['see-also'] ?? listviews['same-model-as'])?.map(normalizeSeeAlsoRow);
 
+  const comments = extractCommentsFromHtml(html);
+
   return {
     droppedBy,
     skinnedFrom,
@@ -322,6 +425,7 @@ export function parseItemSources(html: string): ItemSourcesResult {
     reagentFor,
     canBePlacedIn,
     seeAlso,
+    comments: comments.length > 0 ? comments : undefined,
     rawListviewsFound: foundKeys,
   };
 }

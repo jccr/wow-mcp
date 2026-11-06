@@ -48,6 +48,16 @@ describe('Wowhead Page Parser (ListView tables)', () => {
           {"id": 2318, "name": "Medium Leather", "quality": 1, "level": 20}
         ]
       });
+
+      var lv_comments0 = [
+        {
+          "id": 14050,
+          "date": "2026-05-10T12:00:00Z",
+          "rating": 45,
+          "user": "LeatherGuru",
+          "body": "Best spot to farm this in Forever is Redridge Mountains from the dire wolves."
+        }
+      ];
     </script>
     </body>
     </html>
@@ -100,5 +110,11 @@ describe('Wowhead Page Parser (ListView tables)', () => {
     assert.ok(result.seeAlso);
     assert.equal(result.seeAlso.length, 1);
     assert.equal(result.seeAlso[0].name, 'Medium Leather');
+
+    assert.ok(result.comments);
+    assert.equal(result.comments.length, 1);
+    assert.equal(result.comments[0].user, 'LeatherGuru');
+    assert.equal(result.comments[0].rating, 45);
+    assert.ok(result.comments[0].body.includes('Redridge Mountains'));
   });
 });
