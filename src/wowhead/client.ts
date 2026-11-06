@@ -141,6 +141,23 @@ export class WowheadForeverClient {
     if (slot > now) await new Promise((resolve) => setTimeout(resolve, slot - now));
   }
 
+  /**
+   * Checks the session cookie against a cookie-protected page (uncached). Item XML and
+   * search work without the cookie, so they cannot tell whether the token is valid.
+   */
+  public async probeSession(questId = 902): Promise<{ valid: boolean; statusCode?: number; reason?: string }> {
+    try {
+      const response = await this.http.get(`https://www.wowhead.com/forever/quest=${questId}`);
+      const valid = parseQuestPage(response.body, questId).isQuestPage;
+      return valid
+        ? { valid, statusCode: response.statusCode }
+        : { valid, statusCode: response.statusCode, reason: 'Received a challenge page instead of the quest page' };
+    } catch (err) {
+      const statusCode = (err as { response?: { statusCode?: number } })?.response?.statusCode;
+      return { valid: false, statusCode, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   public setCookie(cookie: string): void {
     const trimmed = cookie.trim();
     const formatted = trimmed.startsWith('aws-waf-token=') ? trimmed : `aws-waf-token=${trimmed}`;

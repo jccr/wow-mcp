@@ -803,28 +803,23 @@ export function registerWowheadTools(
       }
 
       if (testConnection) {
-        try {
-          // Probe a known Listview item page to test the token
-          await client.getItemSources(7298);
-          return jsonContent({
-            status: 'valid',
-            hasCookie: true,
-            cookiePrefix: `${cookie!.slice(0, 30)}...`,
-            message: 'Session token is active and successfully passed CloudFront/WAF verification.',
-          });
-        } catch (err: unknown) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          const isExpired = errMsg.includes('[WAF_VERIFICATION_REQUIRED]') || errMsg.includes('verification required');
-          return jsonContent({
-            status: isExpired ? 'expired' : 'error',
-            hasCookie: true,
-            cookiePrefix: `${cookie!.slice(0, 30)}...`,
-            isExpired,
-            message: isExpired
-              ? 'The configured aws-waf-token has expired. Please refresh the token using wowhead_set_session_token.'
-              : `Connection test failed: ${errMsg}`,
-          });
-        }
+        // Probe a cookie-protected quest page; item XML and search succeed without the cookie
+        const probe = await client.probeSession();
+        const blocked = probe.statusCode === 202 || probe.statusCode === 403 || probe.statusCode === 405;
+        const status = probe.valid ? 'valid' : blocked ? 'expired' : 'error';
+        return jsonContent({
+          status,
+          hasCookie: true,
+          cookiePrefix: `${cookie!.slice(0, 30)}...`,
+          isExpired: status === 'expired',
+          statusCode: probe.statusCode,
+          message:
+            status === 'valid'
+              ? 'Session token is active: a cookie-protected quest page loaded.'
+              : status === 'expired'
+                ? 'The configured aws-waf-token has expired. Please refresh the token using wowhead_set_session_token.'
+                : `Connection test failed: ${probe.reason}`,
+        });
       }
 
       return jsonContent({
