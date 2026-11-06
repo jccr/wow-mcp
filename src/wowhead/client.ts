@@ -1,4 +1,6 @@
 import got, { type Got } from 'got';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   type WowheadSuggestionsResponse,
   type WowheadTooltipResponse,
@@ -6,6 +8,7 @@ import {
   type WowheadEntityDetails,
 } from './types.js';
 import { formatTooltip, getQualityName } from './formatter.js';
+import { parseItemSources, type ItemSourcesResult } from './pageParser.js';
 import { logger } from '../util/logger.js';
 
 export const WOWHEAD_FOREVER_DATA_ENV = 16;
@@ -15,6 +18,8 @@ export const DEFAULT_CHROME_UA =
 export interface WowheadClientOptions {
   userAgent?: string;
   cacheTtlMs?: number;
+  cookie?: string;
+  pagesDataDir?: string;
 }
 
 interface CacheEntry<T> {
@@ -38,6 +43,7 @@ export class WowheadForeverClient {
   private readonly http: Got;
   private readonly userAgent: string;
   private readonly cacheTtlMs: number;
+  private readonly pagesDataDir: string;
   private readonly cache = new Map<string, CacheEntry<unknown>>();
 
   constructor(options: WowheadClientOptions = {}) {
@@ -46,19 +52,31 @@ export class WowheadForeverClient {
       process.env['WOWHEAD_USER_AGENT'] ??
       DEFAULT_CHROME_UA;
     this.cacheTtlMs = options.cacheTtlMs ?? 10 * 60 * 1000; // 10 minutes default
+    this.pagesDataDir =
+      options.pagesDataDir ??
+      process.env['WOWHEAD_PAGES_DIR'] ??
+      path.resolve(process.cwd(), 'data', 'pages');
+
+    const cookie = options.cookie ?? process.env['WOWHEAD_COOKIE'];
+
+    const headers: Record<string, string> = {
+      'user-agent': this.userAgent,
+      accept: '*/*',
+      'accept-language': 'en-US,en;q=0.9',
+      'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'same-origin',
+    };
+
+    if (cookie) {
+      headers['cookie'] = cookie;
+    }
 
     this.http = got.extend({
-      headers: {
-        'user-agent': this.userAgent,
-        accept: '*/*',
-        'accept-language': 'en-US,en;q=0.9',
-        'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
-      },
+      headers,
       timeout: {
         request: 10000,
       },
@@ -90,6 +108,57 @@ export class WowheadForeverClient {
   public getWebUrl(type: string, id: number): string {
     const norm = normalizeEntityType(type);
     return `https://www.wowhead.com/forever/${norm}=${id}`;
+  }
+
+  /**
+   * Reads and parses item drop and skinning sources.
+   * Checks for locally saved snapshot file in data/pages/item-{id}.html first,
+   * or attempts to fetch with session credentials if provided.
+   */
+  public async getItemSources(itemId: number): Promise<ItemSourcesResult> {
+    const cacheKey = `sources:item:${itemId}`;
+    const cached = this.getCached<ItemSourcesResult>(cacheKey);
+    if (cached) return cached;
+
+    // 1. Check local snapshots directory (e.g. data/pages/item-783.html or 783.html)
+    const candidates = [
+      path.join(this.pagesDataDir, `item-${itemId}.html`),
+      path.join(this.pagesDataDir, `${itemId}.html`),
+      path.join(this.pagesDataDir, `item-${itemId}.txt`),
+    ];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        try {
+          const content = fs.readFileSync(candidate, 'utf8');
+          const parsed = parseItemSources(content);
+          parsed.itemId = itemId;
+          this.setCached(cacheKey, parsed);
+          return parsed;
+        } catch (err) {
+          logger.warn({ err, file: candidate }, 'Failed to parse local snapshot file');
+        }
+      }
+    }
+
+    // 2. Fetch page directly if cookies are configured
+    const url = `https://www.wowhead.com/forever/item=${itemId}`;
+    try {
+      const response = await this.http.get(url);
+      const parsed = parseItemSources(response.body);
+      parsed.itemId = itemId;
+      this.setCached(cacheKey, parsed);
+      return parsed;
+    } catch (err: unknown) {
+      const status = (err as { response?: { statusCode?: number } })?.response?.statusCode;
+      if (status === 403 || status === 202) {
+        throw new Error(
+          `Wowhead full item page for item #${itemId} is protected by verification. ` +
+            `Save the page HTML to data/pages/item-${itemId}.html or configure WOWHEAD_COOKIE.`
+        );
+      }
+      throw new Error(`Failed to fetch sources for item #${itemId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**

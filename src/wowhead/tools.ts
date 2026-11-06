@@ -89,6 +89,23 @@ export function registerWowheadTools(
     },
   );
 
+  // ── wowhead_get_item_sources ───────────────────────────
+  server.tool(
+    'wowhead_get_item_sources',
+    'Fetch drop and skinning tables ("Dropped by", "Skinned from") for an item from Wowhead Forever (loads from local snapshots or authenticated session).',
+    {
+      id: z.number().int().positive().describe('Wowhead item ID (e.g. 783 for Light Leather)'),
+    },
+    async ({ id }) => {
+      try {
+        const sources = await client.getItemSources(id);
+        return jsonContent(sources);
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
   // ── wowhead_get_spell ──────────────────────────────────
   server.tool(
     'wowhead_get_spell',
