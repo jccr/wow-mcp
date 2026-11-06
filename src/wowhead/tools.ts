@@ -9,6 +9,7 @@ import { findDungeons, FOREVER_DUNGEONS } from './dungeons.js';
 import { entityTypeEnum } from './types.js';
 import { checkUsability, compareItems, type ItemInfo } from './itemInfo.js';
 import { enrichCandidates, filterZoneQuests, findRewardCandidates } from './questRewards.js';
+import type { NpcLocation } from './locations.js';
 
 function errorContent(message: string) {
   return {
@@ -21,6 +22,47 @@ function jsonContent(data: unknown) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }],
   };
+}
+
+type NpcRef = { id: number; name: string; location?: NpcLocation };
+
+interface QuestGivers {
+  giver?: NpcRef;
+  turnIn?: NpcRef;
+  /** Why givers are missing, e.g. the quest page could not be fetched. */
+  note?: string;
+}
+
+/**
+ * Resolves start/end NPCs (from quest pages, cookie required) and their map
+ * locations (from tooltips, no cookie needed) for a set of quests.
+ */
+async function resolveQuestGivers(client: WowheadForeverClient, questIds: number[]): Promise<Map<number, QuestGivers>> {
+  const unique = [...new Set(questIds)];
+  const details = new Map<number, Awaited<ReturnType<WowheadForeverClient['getQuestDetails']>>>();
+  await Promise.all(unique.map(async (id) => details.set(id, await client.getQuestDetails(id))));
+
+  const npcIds: number[] = [];
+  for (const d of details.values()) {
+    if (d?.info?.startNpc) npcIds.push(d.info.startNpc.id);
+    if (d?.info?.endNpc) npcIds.push(d.info.endNpc.id);
+  }
+  const locations = await client.getNpcLocations(npcIds);
+
+  const result = new Map<number, QuestGivers>();
+  for (const id of unique) {
+    const d = details.get(id);
+    if (!d) {
+      result.set(id, { note: 'Quest page unavailable (Wowhead session cookie may be expired)' });
+      continue;
+    }
+    const ref = (npc?: { id: number; name: string }): NpcRef | undefined =>
+      npc ? { ...npc, location: locations.get(npc.id) } : undefined;
+    const giver = ref(d.info?.startNpc);
+    const turnIn = d.info?.endNpc && d.info.endNpc.id !== d.info.startNpc?.id ? ref(d.info.endNpc) : undefined;
+    result.set(id, giver || turnIn ? { giver, turnIn } : { note: 'Quest starts from an item or object, or the giver is not listed' });
+  }
+  return result;
 }
 
 export function registerWowheadTools(
@@ -216,22 +258,30 @@ export function registerWowheadTools(
       id: z.number().int().positive().describe('Wowhead quest ID (e.g. 7787 for "Rise, Thunderfury!")'),
       locale: z.union([z.string(), z.number()]).default(0).describe('Locale code or number (0 for English). Default: 0'),
       includeItemInfo: z.boolean().default(true).describe('Attach structured stats (type, slot, DPS, stats, class/race restrictions) to each reward item. Default: true'),
+      includeLocations: z.boolean().default(true).describe('Attach zone, map coordinates and a /way waypoint to the start and end NPCs. Default: true'),
     },
-    async ({ id, locale, includeItemInfo }) => {
+    async ({ id, locale, includeItemInfo, includeLocations }) => {
       try {
         const details = await client.getTooltip('quest', id, locale);
+        const output: Record<string, unknown> = { ...details };
+
         const items = details.rewards?.items;
-        if (!includeItemInfo || !items || items.length === 0) {
-          return jsonContent(details);
+        if (includeItemInfo && items && items.length > 0) {
+          const infos = await client.getItemInfos(items.map((i) => i.id));
+          output.rewards = { ...details.rewards, items: items.map((i) => ({ ...i, info: infos.get(i.id) })) };
         }
-        const infos = await client.getItemInfos(items.map((i) => i.id));
-        return jsonContent({
-          ...details,
-          rewards: {
-            ...details.rewards,
-            items: items.map((i) => ({ ...i, info: infos.get(i.id) })),
-          },
-        });
+
+        const info = details.questInfo;
+        if (includeLocations && info && (info.startNpc || info.endNpc)) {
+          const ids = [info.startNpc?.id, info.endNpc?.id].filter((n): n is number => n !== undefined);
+          const locations = await client.getNpcLocations(ids);
+          output.questInfo = {
+            ...info,
+            startNpc: info.startNpc ? { ...info.startNpc, location: locations.get(info.startNpc.id) } : undefined,
+            endNpc: info.endNpc ? { ...info.endNpc, location: locations.get(info.endNpc.id) } : undefined,
+          };
+        }
+        return jsonContent(output);
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
@@ -254,18 +304,24 @@ export function registerWowheadTools(
       race: z.string().optional().describe('Hide quests restricted to other races (e.g. "Troll")'),
       excludeQuestIds: z.array(z.number().int().positive()).optional().describe('Quest IDs to hide, e.g. already completed or in the quest log'),
       onlyWithItemRewards: z.boolean().default(false).describe('Only quests that reward or offer items'),
+      includeQuestGivers: z.boolean().default(false).describe('Attach quest giver/turn-in NPCs with map coordinates and /way waypoints (one quest page request per quest; keep limit small)'),
       limit: z.number().int().min(1).max(300).default(100).describe('Maximum quests to return (default: 100)'),
     },
-    async ({ zoneIds, limit, ...filters }) => {
+    async ({ zoneIds, limit, includeQuestGivers, ...filters }) => {
       try {
         const pages = await Promise.all(zoneIds.map((z) => client.getZoneQuests(z)));
         const quests = filterZoneQuests(pages, filters);
+        let listed: Array<object> = quests.slice(0, limit);
+        if (includeQuestGivers) {
+          const givers = await resolveQuestGivers(client, quests.slice(0, limit).map((q) => q.id));
+          listed = quests.slice(0, limit).map((q) => ({ ...q, ...givers.get(q.id) }));
+        }
         return jsonContent({
           zones: pages.map((p) => ({ zoneId: p.zoneId, zoneName: p.zoneName, totalQuests: p.quests.length })),
           filters,
           count: quests.length,
           truncated: quests.length > limit,
-          quests: quests.slice(0, limit),
+          quests: listed,
         });
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
@@ -295,9 +351,10 @@ export function registerWowheadTools(
       includeUnusable: z.boolean().default(false).describe('Also list items the character cannot use, with reasons'),
       includeTalentGated: z.boolean().default(false).describe('Treat talent-unlocked weapon types (e.g. Shaman two-handed axes/maces) as usable'),
       includeStats: z.boolean().default(true).describe('Fetch full stats/restrictions for returned items (one request per item)'),
+      includeQuestGivers: z.boolean().default(true).describe('Attach quest giver/turn-in NPCs with map coordinates and /way waypoints'),
       limit: z.number().int().min(1).max(50).default(15).describe('Maximum candidates to return (default: 15)'),
     },
-    async ({ zoneIds, compareToItemId, includeStats, limit, ...opts }) => {
+    async ({ zoneIds, compareToItemId, includeStats, includeQuestGivers, limit, ...opts }) => {
       try {
         const pages = await Promise.all(zoneIds.map((z) => client.getZoneQuests(z)));
         let candidates = findRewardCandidates(pages, opts);
@@ -314,12 +371,18 @@ export function registerWowheadTools(
           if (!opts.includeUnusable) candidates = candidates.filter((c) => c.usable);
         }
 
+        let returned: Array<Record<string, any>> = candidates.slice(0, limit);
+        if (includeQuestGivers && returned.length > 0) {
+          const givers = await resolveQuestGivers(client, returned.map((c) => c.quest.id));
+          returned = returned.map((c) => ({ ...c, quest: { ...c.quest, ...givers.get(c.quest.id) } }));
+        }
+
         return jsonContent({
           zones: pages.map((p) => ({ zoneId: p.zoneId, zoneName: p.zoneName })),
           comparedTo: current ? { id: current.id, name: current.name, dps: current.dps, stats: current.stats } : undefined,
           totalMatches,
-          count: Math.min(candidates.length, limit),
-          candidates: candidates.slice(0, limit),
+          count: returned.length,
+          candidates: returned,
         });
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
@@ -367,7 +430,7 @@ export function registerWowheadTools(
   // ── wowhead_get_npc ────────────────────────────────────
   server.tool(
     'wowhead_get_npc',
-    'Fetch NPC name, level, classification (Boss, Elite), and tooltip details from Wowhead Forever by NPC ID.',
+    'Fetch NPC name, level, classification (Boss, Elite), tooltip details, and location (zone, map coordinates, /way waypoint) from Wowhead Forever by NPC ID.',
     {
       id: z.number().int().positive().describe('Wowhead NPC ID (e.g. 10184 for Onyxia, 11502 for Ragnaros)'),
       locale: z.union([z.string(), z.number()]).default(0).describe('Locale code or number (0 for English). Default: 0'),
@@ -375,7 +438,13 @@ export function registerWowheadTools(
     async ({ id, locale }) => {
       try {
         const details = await client.getTooltip('npc', id, locale);
-        return jsonContent(details);
+        let location: NpcLocation | undefined;
+        try {
+          location = await client.getNpcLocation(id);
+        } catch {
+          // Location is best effort
+        }
+        return jsonContent(location ? { ...details, location } : details);
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }

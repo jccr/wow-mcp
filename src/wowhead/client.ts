@@ -18,6 +18,7 @@ import {
   type ZoneQuestsPage,
 } from './pageParser.js';
 import { parseItemXmlInfo, type ItemInfo } from './itemInfo.js';
+import { formatWaypoint, parseTooltipMap, type NpcLocation } from './locations.js';
 import { logger } from '../util/logger.js';
 
 export const WOWHEAD_FOREVER_DATA_ENV = 16;
@@ -425,6 +426,54 @@ export class WowheadForeverClient {
 
     this.setCached(cacheKey, details);
     return details;
+  }
+
+  /**
+   * Resolves an NPC's zone, map coordinates and a waypoint command from its tooltip.
+   * Uses the tooltip endpoint, so it works without the session cookie.
+   */
+  public async getNpcLocation(npcId: number): Promise<NpcLocation> {
+    const cacheKey = `npcloc:${npcId}`;
+    const cached = this.getCached<NpcLocation>(cacheKey);
+    if (cached) return cached;
+
+    const tooltip = await this.getTooltip('npc', npcId);
+    const parsed = parseTooltipMap(tooltip.map);
+    const location: NpcLocation = {
+      npcId,
+      npcName: tooltip.name,
+      zoneId: parsed?.zoneId,
+      coords: parsed?.coords ?? [],
+    };
+    if (location.zoneId !== undefined) {
+      location.zoneName = await this.getZoneName(location.zoneId);
+    }
+    location.waypoint = formatWaypoint(location.zoneName, location.coords[0]);
+    this.setCached(cacheKey, location);
+    return location;
+  }
+
+  /** Looks up many NPC locations in parallel; failed lookups are omitted. */
+  public async getNpcLocations(npcIds: number[]): Promise<Map<number, NpcLocation>> {
+    const results = new Map<number, NpcLocation>();
+    await Promise.all(
+      [...new Set(npcIds)].map(async (id) => {
+        try {
+          results.set(id, await this.getNpcLocation(id));
+        } catch (err) {
+          logger.warn({ err: err instanceof Error ? err.message : String(err), npcId: id }, 'Could not resolve NPC location');
+        }
+      }),
+    );
+    return results;
+  }
+
+  private async getZoneName(zoneId: number): Promise<string | undefined> {
+    try {
+      return (await this.getTooltip('zone', zoneId)).name;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
