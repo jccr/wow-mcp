@@ -1,9 +1,11 @@
 import { z } from 'zod';
-import { regionSchema, localeSchema } from '../blizzard/endpoints/types.js';
+import { regionSchema, localeSchema, gameSchema, namespaceOverrideSchema } from '../blizzard/endpoints/types.js';
 
 export const characterInputSchema = {
   region: regionSchema,
   locale: localeSchema,
+  game: gameSchema,
+  namespace: namespaceOverrideSchema,
   realmSlug: z
     .string()
     .min(1)

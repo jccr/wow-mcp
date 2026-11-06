@@ -5,8 +5,50 @@ import { regionEnum, type Region } from '../../config/regions.js';
 
 export type NamespaceType = 'static' | 'dynamic' | 'profile';
 
-export function resolveNamespace(type: NamespaceType, region: Region): string {
-  return `${type}-${region}`;
+/**
+ * Which World of Warcraft game version to query.
+ * - retail:  Modern WoW            → `{type}-{region}`         (e.g. static-us)
+ * - classic: WoW Classic           → `{type}-classic-{region}` (e.g. static-classic-us)
+ * - forever: World of Warcraft: Forever → `{type}-forever-{region}` (e.g. static-forever-us)
+ *
+ * Blizzard has not officially documented the Forever namespaces yet. If the
+ * unversioned name is rejected, pass a full `namespace` override instead
+ * (e.g. "static-1.60.1_70399-forever-us").
+ */
+export const gameEnum = z.enum(['retail', 'classic', 'forever']);
+export type GameFlavor = z.infer<typeof gameEnum>;
+
+export function resolveNamespace(
+  type: NamespaceType,
+  region: Region,
+  game: GameFlavor = 'retail',
+  override?: string,
+): string {
+  if (override) return override;
+  return game === 'retail' ? `${type}-${region}` : `${type}-${game}-${region}`;
+}
+
+/**
+ * Tool groups (the part after `wow_`) that exist only in retail WoW.
+ * Calls with game != "retail" are rejected with a clear error instead of an
+ * opaque 404 from Blizzard.
+ */
+const RETAIL_ONLY_GROUPS = new Set([
+  'azeriteEssence', 'conduit', 'covenant', 'soulbind',
+  'decor', 'fixture', 'fixtureHook', 'neighborhood', 'neighborhoodMap', 'room',
+  'heirloom', 'keystoneAffix', 'mythicKeystone', 'mythicKeystoneDungeon',
+  'mythicKeystoneLeaderboard', 'mythicKeystonePeriod', 'mythicKeystoneSeason',
+  'mythicRaidLeaderboard', 'techTalent', 'techTalentTree',
+  'modifiedCrafting', 'modifiedCraftingCategory', 'modifiedCraftingReagentSlotType',
+]);
+const RETAIL_ONLY_TOOLS = new Set([
+  'wow_character_decorCollection', 'wow_character_heirloomsCollection',
+  'wow_character_house', 'wow_character_mythicKeystoneProfile',
+  'wow_character_mythicKeystoneSeason', 'wow_character_soulbinds',
+]);
+
+export function isRetailOnly(toolName: string): boolean {
+  return RETAIL_ONLY_TOOLS.has(toolName) || RETAIL_ONLY_GROUPS.has(toolName.split('_')[1] ?? '');
 }
 
 // ── Endpoint definition ────────────────────────────────
@@ -57,6 +99,22 @@ export const slug = (desc: string) => z.string().min(1).describe(desc);
 export const regionSchema = regionEnum
   .default('us')
   .describe('API region: "us", "eu", "kr", or "tw" (default: "us")');
+
+/** Game version param — injected into every tool automatically. */
+export const gameSchema = gameEnum
+  .default('retail')
+  .describe(
+    'Game version: "retail" (Modern WoW, default), "classic" (WoW Classic), or "forever" (World of Warcraft: Forever)',
+  );
+
+/** Optional full namespace override — injected into every tool automatically. */
+export const namespaceOverrideSchema = z
+  .string()
+  .regex(/^[a-z0-9._-]+$/)
+  .optional()
+  .describe(
+    'Advanced: full Blizzard namespace to use instead of the one derived from game + region (e.g. "static-1.60.1_70399-forever-us"). Use when the default namespace returns 403/404.',
+  );
 
 /** Locale param — injected into every tool automatically. */
 export const localeSchema = z

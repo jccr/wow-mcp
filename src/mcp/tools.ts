@@ -7,8 +7,12 @@ import {
   type EndpointDef,
   buildPath,
   resolveNamespace,
+  isRetailOnly,
   regionSchema,
   localeSchema,
+  gameSchema,
+  namespaceOverrideSchema,
+  type GameFlavor,
 } from '../blizzard/endpoints/types.js';
 import type { Region } from '../config/regions.js';
 import { characterAchievementsSummarySchema } from '../blizzard/schemas/achievementSchemas.js';
@@ -34,10 +38,13 @@ function registerEndpoint(
   ep: EndpointDef,
   client: BlizzardClient,
 ): void {
-  // Every tool gets region + locale + its own params
+  // Every tool gets region + locale + game + namespace override + its own params
+  const retailOnly = isRetailOnly(ep.toolName);
   const inputSchema: Record<string, z.ZodType> = {
     region: regionSchema,
     locale: localeSchema,
+    game: gameSchema,
+    namespace: namespaceOverrideSchema,
     ...ep.inputSchema,
   };
 
@@ -55,15 +62,28 @@ function registerEndpoint(
     ep.toolName,
     {
       title: ep.title,
-      description: ep.description,
+      description: retailOnly
+        ? `${ep.description} (Retail only — not available for Classic or Forever.)`
+        : ep.description,
       inputSchema,
     },
     async (args: Record<string, unknown>) => {
       try {
         const region = (args['region'] ?? 'us') as Region;
         const locale = (args['locale'] ?? 'en_US') as string;
+        const game = (args['game'] ?? 'retail') as GameFlavor;
+        if (retailOnly && game !== 'retail') {
+          return errorContent(
+            `${ep.toolName} is only available for retail WoW, not "${game}".`,
+          );
+        }
         const path = buildPath(ep.path, args);
-        const namespace = resolveNamespace(ep.namespace, region);
+        const namespace = resolveNamespace(
+          ep.namespace,
+          region,
+          game,
+          args['namespace'] as string | undefined,
+        );
 
         // Merge in search query params if provided
         let searchParams: Record<string, string> = {};
@@ -107,7 +127,7 @@ function registerCustomTools(
         'Builds a chronologically sorted timeline of completed achievements for a character. Includes earliest/latest completion dates and total count. This is a computed view — not a raw Blizzard endpoint.',
       inputSchema: characterInputSchema,
     },
-    async ({ realmSlug, characterName, region, locale }) => {
+    async ({ realmSlug, characterName, region, locale, game, namespace: nsOverride }) => {
       try {
         const r = (region ?? 'us') as Region;
         const l = (locale ?? 'en_US') as string;
@@ -115,7 +135,12 @@ function registerCustomTools(
           'profile/wow/character/{realmSlug}/{characterName}/achievements',
           { realmSlug, characterName },
         );
-        const namespace = resolveNamespace('profile', r);
+        const namespace = resolveNamespace(
+          'profile',
+          r,
+          (game ?? 'retail') as GameFlavor,
+          nsOverride as string | undefined,
+        );
         const raw = await client.request<unknown>(path, {
           region: r,
           namespace,

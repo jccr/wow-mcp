@@ -42,6 +42,24 @@ Every tool accepts two optional parameters:
 
 No region configuration is needed in the environment. The same Battle.net credentials work across all regions.
 
+### Game version (Retail / Classic / Forever)
+
+Every tool also accepts:
+
+- `game` — `"retail"` (default), `"classic"`, or `"forever"` ([World of Warcraft: Forever](https://worldofwarcraft.blizzard.com/en-us/forever)). This picks the Blizzard namespace:
+
+  | game      | namespace               | example             |
+  |-----------|-------------------------|---------------------|
+  | `retail`  | `{type}-{region}`         | `static-us`         |
+  | `classic` | `{type}-classic-{region}` | `static-classic-us` |
+  | `forever` | `{type}-forever-{region}` | `static-forever-us` |
+
+- `namespace` — optional full namespace override, e.g. `"static-1.60.1_70399-forever-us"`. Blizzard has not officially documented the Forever namespaces yet. If the derived namespace returns 403/404, pass the versioned one here.
+
+Retail-only tools (covenants, soulbinds, azerite, Mythic+, housing, heirlooms, etc.) return an error when `game` is not `retail`.
+
+> **Forever caveats (as of launch):** public character lookups (`/profile/wow/character/...`) reportedly still 404, and `dynamic-forever-*` (auctions, realms) reportedly returns 403. Account-level profile data (`/profile/user/wow`) needs a user OAuth token, which this server does not support yet.
+
 ## Environment variables
 
 See [`.env.example`](.env.example). Only two are required:
@@ -145,4 +163,4 @@ test/
   auth.test.ts                      # OAuth2 auth integration tests
 ```
 
-Endpoints are defined declaratively in `gamedata.ts` and `profileEndpoints.ts`. Each entry specifies a tool name, path template, namespace type, and zod input schema. The `tools.ts` module iterates over the registry and auto-registers every entry as an MCP tool, injecting `region` and `locale` parameters automatically.
+Endpoints are defined declaratively in `gamedata.ts` and `profileEndpoints.ts`. Each entry specifies a tool name, path template, namespace type, and zod input schema. The `tools.ts` module iterates over the registry and auto-registers every entry as an MCP tool, injecting `region`, `locale`, `game` and `namespace` parameters automatically.
