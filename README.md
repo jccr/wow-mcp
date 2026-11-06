@@ -27,7 +27,7 @@ npm test           # run auth integration tests
 
 ## API coverage
 
-All 196 retail WoW endpoints are registered as individual MCP tools, plus one custom computed tool:
+All 205 WoW API endpoints are registered as individual MCP tools, plus three custom tools:
 
 - **Game Data API** — 161 tools covering achievements, auctions, azerite essences, connected realms, covenants, creatures, guild crests, heirlooms, items, journals, media, modified crafting, mounts, mythic keystones, mythic raid leaderboards, pets, playable classes, playable races, playable specializations, power types, professions, PvP seasons, PvP tiers, quests, realms, regions, reputations, search endpoints, spells, talents, tech talents, titles, toys, and WoW tokens.
 - **Profile API** — 35 tools for character profiles, achievements, appearance, collections, dungeons, encounters, equipment, hunter pets, media, mythic keystone profile, professions, PvP, quests, reputations, soulbinds, specializations, statistics, titles, and guild endpoints.
