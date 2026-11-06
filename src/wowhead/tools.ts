@@ -94,14 +94,60 @@ export function registerWowheadTools(
   // ── wowhead_get_item_sources ───────────────────────────
   server.tool(
     'wowhead_get_item_sources',
-    'Fetch drop and skinning tables ("Dropped by", "Skinned from") for an item from Wowhead Forever (loads from local snapshots or authenticated session).',
+    'Fetch related tables ("Dropped by", "Contained in", "Skinned from", "Reagent for", "Can be placed in", "See also", "Sold by", "Crafted by") for an item from Wowhead Forever.',
     {
       id: z.number().int().positive().describe('Wowhead item ID (e.g. 783 for Light Leather)'),
+      section: z.enum([
+        'all',
+        'dropped-by',
+        'contained-in',
+        'skinned-from',
+        'reagent-for',
+        'can-be-placed-in',
+        'see-also',
+        'sold-by',
+        'crafted-by',
+        'reward-from-quests',
+      ]).default('all').describe('Optional filter for specific relation category: "dropped-by", "contained-in", "skinned-from", "reagent-for", "can-be-placed-in", "see-also", or "all"'),
     },
-    async ({ id }) => {
+    async ({ id, section }) => {
       try {
         const sources = await client.getItemSources(id);
-        return jsonContent(sources);
+        if (section === 'all') {
+          return jsonContent(sources);
+        }
+
+        const filtered: Record<string, any> = { itemId: id, section };
+        switch (section) {
+          case 'dropped-by':
+            filtered['droppedBy'] = sources.droppedBy;
+            break;
+          case 'contained-in':
+            filtered['containedIn'] = sources.containedInObject;
+            break;
+          case 'skinned-from':
+            filtered['skinnedFrom'] = sources.skinnedFrom;
+            break;
+          case 'reagent-for':
+            filtered['reagentFor'] = sources.reagentFor;
+            break;
+          case 'can-be-placed-in':
+            filtered['canBePlacedIn'] = sources.canBePlacedIn;
+            break;
+          case 'see-also':
+            filtered['seeAlso'] = sources.seeAlso;
+            break;
+          case 'sold-by':
+            filtered['soldBy'] = sources.soldBy;
+            break;
+          case 'crafted-by':
+            filtered['craftedBy'] = sources.craftedBy;
+            break;
+          case 'reward-from-quests':
+            filtered['rewardFromQuests'] = sources.rewardFromQuests;
+            break;
+        }
+        return jsonContent(filtered);
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }

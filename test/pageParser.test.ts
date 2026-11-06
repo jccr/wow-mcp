@@ -24,6 +24,30 @@ describe('Wowhead Page Parser (ListView tables)', () => {
           {"id": 2043, "name": "Prairie Wolf", "classification": 0, "level": [5, 6], "count": 180, "outof": 200}
         ]
       });
+
+      new Listview({
+        id: 'reagent-for',
+        name: 'Reagent For',
+        data: [
+          {"id": 2149, "name": "Handstitched Leather Boots", "skill": 165, "skillname": "Leatherworking", "learnedat": 1}
+        ]
+      });
+
+      new Listview({
+        id: 'can-be-placed-in',
+        name: 'Can be placed in',
+        data: [
+          {"id": 5764, "name": "Small Leather Backpack", "slots": 10, "quality": 1}
+        ]
+      });
+
+      new Listview({
+        id: 'see-also',
+        name: 'See also',
+        data: [
+          {"id": 2318, "name": "Medium Leather", "quality": 1, "level": 20}
+        ]
+      });
     </script>
     </body>
     </html>
@@ -40,7 +64,12 @@ describe('Wowhead Page Parser (ListView tables)', () => {
   it('normalizes dropped-by and skinned-from records', () => {
     const result = parseItemSources(sampleHtml);
 
-    assert.deepEqual(result.rawListviewsFound, ['dropped-by', 'skinned-from']);
+    assert.ok(result.rawListviewsFound.includes('dropped-by'));
+    assert.ok(result.rawListviewsFound.includes('skinned-from'));
+    assert.ok(result.rawListviewsFound.includes('reagent-for'));
+    assert.ok(result.rawListviewsFound.includes('can-be-placed-in'));
+    assert.ok(result.rawListviewsFound.includes('see-also'));
+
     assert.ok(result.droppedBy);
     assert.equal(result.droppedBy.length, 2);
 
@@ -59,5 +88,17 @@ describe('Wowhead Page Parser (ListView tables)', () => {
     assert.ok(result.skinnedFrom);
     assert.equal(result.skinnedFrom.length, 1);
     assert.equal(result.skinnedFrom[0].dropRatePercent, 90);
+
+    assert.ok(result.reagentFor);
+    assert.equal(result.reagentFor.length, 1);
+    assert.equal(result.reagentFor[0].name, 'Handstitched Leather Boots');
+
+    assert.ok(result.canBePlacedIn);
+    assert.equal(result.canBePlacedIn.length, 1);
+    assert.equal(result.canBePlacedIn[0].name, 'Small Leather Backpack');
+
+    assert.ok(result.seeAlso);
+    assert.equal(result.seeAlso.length, 1);
+    assert.equal(result.seeAlso[0].name, 'Medium Leather');
   });
 });

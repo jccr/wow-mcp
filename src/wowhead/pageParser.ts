@@ -49,16 +49,46 @@ export interface WowheadQuestSource {
   sideName?: string;
 }
 
+export interface WowheadReagentForSource {
+  id: number;
+  name: string;
+  skillId?: number;
+  skillName?: string;
+  skillLevel?: number;
+  category?: number;
+  reagents?: [number, number][]; // [itemId, count]
+}
+
+export interface WowheadContainerSource {
+  id: number;
+  name: string;
+  type?: string;
+  quality?: number;
+  level?: number;
+  slots?: number;
+}
+
+export interface WowheadSeeAlsoItem {
+  id: number;
+  name: string;
+  quality?: number;
+  level?: number;
+  description?: string;
+}
+
 export interface ItemSourcesResult {
   itemId?: number;
   droppedBy?: WowheadNpcSource[];
   skinnedFrom?: WowheadNpcSource[];
+  containedInObject?: WowheadNpcSource[];
   minedFromObject?: WowheadNpcSource[];
   gatheredFromObject?: WowheadNpcSource[];
-  containedInObject?: WowheadNpcSource[];
   soldBy?: WowheadVendorSource[];
   rewardFromQuests?: WowheadQuestSource[];
   craftedBy?: WowheadCraftingSource[];
+  reagentFor?: WowheadReagentForSource[];
+  canBePlacedIn?: WowheadContainerSource[];
+  seeAlso?: WowheadSeeAlsoItem[];
   rawListviewsFound: string[];
 }
 
@@ -119,6 +149,39 @@ function normalizeCraftingRow(row: Record<string, any>): WowheadCraftingSource {
     skillName: row.skillname,
     skillLevel: row.learnedat ?? row.colors?.[0],
     sourceType: row.sourcemore?.[0]?.n ?? row.sourcename,
+  };
+}
+
+function normalizeReagentForRow(row: Record<string, any>): WowheadReagentForSource {
+  return {
+    id: row.id,
+    name: row.name ?? `Spell #${row.id}`,
+    skillId: row.skill,
+    skillName: row.skillname,
+    skillLevel: row.learnedat ?? row.colors?.[0],
+    category: row.category,
+    reagents: Array.isArray(row.reagents) ? row.reagents : undefined,
+  };
+}
+
+function normalizeContainerRow(row: Record<string, any>): WowheadContainerSource {
+  return {
+    id: row.id,
+    name: row.name ?? `Container #${row.id}`,
+    type: row.type,
+    quality: row.quality,
+    level: row.level,
+    slots: row.slots,
+  };
+}
+
+function normalizeSeeAlsoRow(row: Record<string, any>): WowheadSeeAlsoItem {
+  return {
+    id: row.id,
+    name: row.name ?? `Item #${row.id}`,
+    quality: row.quality,
+    level: row.level,
+    description: row.description,
   };
 }
 function normalizeNpcRow(row: Record<string, any>): WowheadNpcSource {
@@ -239,10 +302,13 @@ export function parseItemSources(html: string): ItemSourcesResult {
   const skinnedFrom = listviews['skinned-from']?.map(normalizeNpcRow);
   const minedFromObject = listviews['mined-from-object']?.map(normalizeNpcRow);
   const gatheredFromObject = listviews['gathered-from-object']?.map(normalizeNpcRow);
-  const containedInObject = listviews['contained-in-object']?.map(normalizeNpcRow);
+  const containedInObject = (listviews['contained-in-object'] ?? listviews['contained-in-item'] ?? listviews['contained-in'])?.map(normalizeNpcRow);
   const soldBy = (listviews['sold-by'] ?? listviews['vendors'])?.map(normalizeVendorRow);
   const rewardFromQuests = (listviews['reward-of-quest'] ?? listviews['reward-from-quests'])?.map(normalizeQuestRow);
   const craftedBy = (listviews['crafted-by'] ?? listviews['created-by'])?.map(normalizeCraftingRow);
+  const reagentFor = (listviews['reagent-for'] ?? listviews['used-in-recipe'])?.map(normalizeReagentForRow);
+  const canBePlacedIn = (listviews['can-be-placed-in'] ?? listviews['placed-in'])?.map(normalizeContainerRow);
+  const seeAlso = (listviews['see-also'] ?? listviews['same-model-as'])?.map(normalizeSeeAlsoRow);
 
   return {
     droppedBy,
@@ -253,6 +319,9 @@ export function parseItemSources(html: string): ItemSourcesResult {
     soldBy,
     rewardFromQuests,
     craftedBy,
+    reagentFor,
+    canBePlacedIn,
+    seeAlso,
     rawListviewsFound: foundKeys,
   };
 }
