@@ -10,6 +10,7 @@ const TEST_AUTH_SECRET = 'test-passphrase-42';
 const testEnv: Env = {
   BNET_CLIENT_ID: 'fake-bnet-id',
   BNET_CLIENT_SECRET: 'fake-bnet-secret',
+  BNET_REDIRECT_URI: 'http://localhost:3000/bnet/callback',
   LOG_LEVEL: 'fatal',
   HTTP_TIMEOUT_MS: 15_000,
   HTTP_RETRY_LIMIT: 2,

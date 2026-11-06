@@ -45,6 +45,7 @@ const RETAIL_ONLY_TOOLS = new Set([
   'wow_character_decorCollection', 'wow_character_heirloomsCollection',
   'wow_character_house', 'wow_character_mythicKeystoneProfile',
   'wow_character_mythicKeystoneSeason', 'wow_character_soulbinds',
+  'wow_account_decorCollection', 'wow_account_heirloomsCollection',
 ]);
 
 export function isRetailOnly(toolName: string): boolean {
@@ -64,6 +65,8 @@ export interface EndpointDef {
   path: string;
   /** Which Blizzard namespace to use. */
   namespace: NamespaceType;
+  /** "user" = needs the linked Battle.net user's token (Account Profile API). */
+  auth?: 'user';
   /** Zod schemas for tool input parameters (path params + any extras). */
   inputSchema: Record<string, z.ZodType>;
   /** If true, an extra optional `searchQuery` param is added for arbitrary query params. */

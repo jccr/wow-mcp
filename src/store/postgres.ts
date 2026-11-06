@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { logger } from '../util/logger.js';
-import type { OAuthStore, ClientRecord, AuthCodeRecord, TokenRecord } from './types.js';
+import type { OAuthStore, ClientRecord, AuthCodeRecord, TokenRecord, BnetUserTokenRecord } from './types.js';
 
 const { Pool } = pg;
 
@@ -37,6 +37,15 @@ export class PostgresStore implements OAuthStore {
       CREATE TABLE IF NOT EXISTS oauth_tokens (
         token                  TEXT PRIMARY KEY,
         expires_at_ms          BIGINT NOT NULL,
+        created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS bnet_user_tokens (
+        id                     TEXT PRIMARY KEY,
+        access_token           TEXT NOT NULL,
+        expires_at_ms          BIGINT NOT NULL,
+        scope                  TEXT,
+        battletag              TEXT,
         created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `;
@@ -145,12 +154,47 @@ export class PostgresStore implements OAuthStore {
     await this.pool.query(`DELETE FROM oauth_tokens WHERE token = $1`, [token]);
   }
 
+  // ── Battle.net user token (single row, id = 'default') ──────────────────────
+
+  async getBnetUserToken(): Promise<BnetUserTokenRecord | undefined> {
+    const { rows } = await this.pool.query(
+      `SELECT access_token, expires_at_ms, scope, battletag FROM bnet_user_tokens WHERE id = 'default'`,
+    );
+    if (rows.length === 0) return undefined;
+    const r = rows[0];
+    return {
+      accessToken: r.access_token,
+      expiresAtMs: Number(r.expires_at_ms),
+      scope: r.scope ?? undefined,
+      battletag: r.battletag ?? undefined,
+    };
+  }
+
+  async setBnetUserToken(record: BnetUserTokenRecord): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO bnet_user_tokens (id, access_token, expires_at_ms, scope, battletag)
+       VALUES ('default', $1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET
+         access_token = EXCLUDED.access_token,
+         expires_at_ms = EXCLUDED.expires_at_ms,
+         scope = EXCLUDED.scope,
+         battletag = EXCLUDED.battletag,
+         created_at = NOW()`,
+      [record.accessToken, record.expiresAtMs, record.scope ?? null, record.battletag ?? null],
+    );
+  }
+
+  async deleteBnetUserToken(): Promise<void> {
+    await this.pool.query(`DELETE FROM bnet_user_tokens WHERE id = 'default'`);
+  }
+
   // ── Maintenance ────────────────────────────────────────────────────────────
 
   async cleanup(): Promise<void> {
     const now = Date.now();
     await this.pool.query(`DELETE FROM oauth_auth_codes WHERE expires_at_ms <= $1`, [now]);
     await this.pool.query(`DELETE FROM oauth_tokens WHERE expires_at_ms <= $1`, [now]);
+    await this.pool.query(`DELETE FROM bnet_user_tokens WHERE expires_at_ms <= $1`, [now]);
   }
 
   async close(): Promise<void> {

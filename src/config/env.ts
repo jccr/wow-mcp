@@ -3,6 +3,9 @@ import { z } from 'zod';
 const envSchema = z.object({
   BNET_CLIENT_ID: z.string().min(1, 'BNET_CLIENT_ID is required'),
   BNET_CLIENT_SECRET: z.string().min(1, 'BNET_CLIENT_SECRET is required'),
+  // Redirect URL for Battle.net *user* login (wow_account_login). Must exactly
+  // match a redirect URL registered for the client on develop.battle.net.
+  BNET_REDIRECT_URI: z.string().url().default('http://localhost:3000/bnet/callback'),
   LOG_LEVEL: z
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
     .default('info'),

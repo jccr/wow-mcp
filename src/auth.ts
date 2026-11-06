@@ -28,6 +28,12 @@ export function isAuthEnabled(env: Env): boolean {
 let store: OAuthStore;
 let cleanupTimer: ReturnType<typeof setInterval> | undefined;
 
+/** The initialised store (OAuth records + linked Battle.net user token). */
+export function getStore(): OAuthStore {
+  if (!store) throw new Error('Store not initialised — call initAuthStore() first');
+  return store;
+}
+
 /** Initialise the OAuth store. Must be called once before handling requests. */
 export async function initAuthStore(env: Env): Promise<void> {
   store = await createStore(env);

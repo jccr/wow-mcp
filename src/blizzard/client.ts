@@ -25,7 +25,10 @@ export class BlizzardClient {
       hooks: {
         beforeRequest: [
           async (options) => {
-            const token = await this.tokenManager.getAccessToken();
+            // A per-request user token (Account Profile API) takes precedence
+            // over the app's client-credentials token.
+            const userToken = options.context?.['userToken'] as string | undefined;
+            const token = userToken ?? (await this.tokenManager.getAccessToken());
             options.headers['authorization'] = `Bearer ${token}`;
           },
         ],
@@ -46,6 +49,8 @@ export class BlizzardClient {
       locale?: string;
       searchParams?: Record<string, string>;
       useCache?: boolean;
+      /** Battle.net user access token (Account Profile API). Disables caching. */
+      userToken?: string;
     },
   ): Promise<T> {
     const {
@@ -53,8 +58,10 @@ export class BlizzardClient {
       namespace,
       locale = 'en_US',
       searchParams = {},
-      useCache = true,
+      userToken,
     } = opts;
+    // Never cache user-scoped responses.
+    const useCache = userToken ? false : (opts.useCache ?? true);
 
     const url = `${apiHost[region]}/${path}`;
     const cacheKey = `${url}|${namespace}|${locale}|${JSON.stringify(searchParams)}`;
@@ -68,6 +75,7 @@ export class BlizzardClient {
     }
 
     const requestOpts: OptionsInit = {
+      context: userToken ? { userToken } : {},
       searchParams: {
         namespace,
         locale,
@@ -80,6 +88,11 @@ export class BlizzardClient {
       if (useCache) this.cache.set(cacheKey, resp.body);
       return resp.body;
     } catch (err) {
+      if (userToken && err instanceof HTTPError && err.response.statusCode === 401) {
+        throw new Error(
+          'Battle.net login expired or was revoked. Call wow_account_login to log in again.',
+        );
+      }
       if (err instanceof HTTPError && err.response.statusCode === 401) {
         logger.warn('Got 401, refreshing token and retrying: %s', url);
         this.tokenManager.invalidate();

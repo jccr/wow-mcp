@@ -3,6 +3,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { BlizzardClient } from '../blizzard/client.js';
 import { gamedataEndpoints } from '../blizzard/endpoints/gamedata.js';
 import { profileEndpoints } from '../blizzard/endpoints/profileEndpoints.js';
+import { accountEndpoints } from '../blizzard/endpoints/accountEndpoints.js';
+import { createLoginUrl, getUserToken, clearUserToken } from '../blizzard/userAuth.js';
 import {
   type EndpointDef,
   buildPath,
@@ -95,11 +97,23 @@ function registerEndpoint(
           }
         }
 
+        let userToken: string | undefined;
+        if (ep.auth === 'user') {
+          const rec = await getUserToken();
+          if (!rec) {
+            return errorContent(
+              'Not logged in to Battle.net (or the 24h login expired). Call wow_account_login and open the returned URL, then retry.',
+            );
+          }
+          userToken = rec.accessToken;
+        }
+
         const data = await client.request<unknown>(path, {
           region,
           namespace,
           locale,
           searchParams,
+          userToken,
         });
         return {
           content: [{ type: 'text', text: JSON.stringify(enrichTimestamps(data), null, 2) }],
@@ -117,7 +131,57 @@ function registerEndpoint(
 function registerCustomTools(
   server: McpServer,
   client: BlizzardClient,
+  env: Env,
 ): void {
+  // Battle.net user login (for wow_account_* tools)
+  server.registerTool(
+    'wow_account_login',
+    {
+      title: 'Battle.net Login',
+      description:
+        'Links a Battle.net account so the wow_account_* tools (your characters, collections, protected character data) work. Returns the current login status and a one-time URL (valid 10 minutes) for the user to open in a browser and log in. Logins last about 24 hours. Show the URL to the user.',
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const current = await getUserToken();
+        const { url, expiresAtMs } = createLoginUrl(env);
+        const result = {
+          loggedIn: Boolean(current),
+          battletag: current?.battletag,
+          loginExpiresAt: current ? new Date(current.expiresAtMs).toISOString() : undefined,
+          loginUrl: url,
+          loginUrlExpiresAt: new Date(expiresAtMs).toISOString(),
+          instructions: current
+            ? 'Already logged in. Open loginUrl only to switch accounts or renew the login.'
+            : 'Open loginUrl in a browser, log in to Battle.net and approve access. Then retry the wow_account_* tool.',
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (err: unknown) {
+        logger.error({ err }, 'wow_account_login failed');
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  server.registerTool(
+    'wow_account_logout',
+    {
+      title: 'Battle.net Logout',
+      description: 'Forgets the linked Battle.net login on this server.',
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        await clearUserToken();
+        return { content: [{ type: 'text', text: 'Logged out of Battle.net.' }] };
+      } catch (err: unknown) {
+        logger.error({ err }, 'wow_account_logout failed');
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
   // Timeline: sorts + filters achievements into chronological order
   server.registerTool(
     'wow_character_achievementsTimeline',
@@ -174,6 +238,7 @@ export function registerTools(server: McpServer, env: Env): void {
   const allEndpoints: EndpointDef[] = [
     ...gamedataEndpoints,
     ...profileEndpoints,
+    ...accountEndpoints,
   ];
 
   logger.info('Registering %d API endpoint tools', allEndpoints.length);
@@ -183,10 +248,10 @@ export function registerTools(server: McpServer, env: Env): void {
   }
 
   // Custom computed tools
-  registerCustomTools(server, client);
+  registerCustomTools(server, client, env);
 
   logger.info(
     'Total tools registered: %d',
-    allEndpoints.length + 1, // +1 for timeline
+    allEndpoints.length + 3, // +3: timeline, account login, account logout
   );
 }

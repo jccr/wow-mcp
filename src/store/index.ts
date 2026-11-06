@@ -5,7 +5,7 @@ import { PostgresStore } from './postgres.js';
 import { logger } from '../util/logger.js';
 
 export type { OAuthStore } from './types.js';
-export type { ClientRecord, AuthCodeRecord, TokenRecord } from './types.js';
+export type { ClientRecord, AuthCodeRecord, TokenRecord, BnetUserTokenRecord } from './types.js';
 
 export async function createStore(env: Env): Promise<OAuthStore> {
   if (env.DATABASE_URL) {

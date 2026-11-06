@@ -22,6 +22,14 @@ export interface TokenRecord {
   expiresAtMs: number;
 }
 
+/** The single linked Battle.net user's access token (wow_account_login). */
+export interface BnetUserTokenRecord {
+  accessToken: string;
+  expiresAtMs: number;
+  scope?: string;
+  battletag?: string;
+}
+
 // ── Store interface ────────────────────────────────────────────────────────────
 
 export interface OAuthStore {
@@ -41,6 +49,11 @@ export interface OAuthStore {
   getToken(token: string): Promise<TokenRecord | undefined>;
   setToken(token: string, record: TokenRecord): Promise<void>;
   deleteToken(token: string): Promise<void>;
+
+  // Battle.net user token (single linked account)
+  getBnetUserToken(): Promise<BnetUserTokenRecord | undefined>;
+  setBnetUserToken(record: BnetUserTokenRecord): Promise<void>;
+  deleteBnetUserToken(): Promise<void>;
 
   /** Remove expired auth codes and tokens. */
   cleanup(): Promise<void>;

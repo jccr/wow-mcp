@@ -16,3 +16,7 @@ export const apiHost: Record<Region, string> = {
  * A single client_id/client_secret works across all regions.
  */
 export const OAUTH_TOKEN_URL = 'https://oauth.battle.net/token';
+
+/** User login (authorization code flow) endpoints. */
+export const OAUTH_AUTHORIZE_URL = 'https://oauth.battle.net/authorize';
+export const OAUTH_USERINFO_URL = 'https://oauth.battle.net/userinfo';

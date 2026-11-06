@@ -1,9 +1,10 @@
-import type { OAuthStore, ClientRecord, AuthCodeRecord, TokenRecord } from './types.js';
+import type { OAuthStore, ClientRecord, AuthCodeRecord, TokenRecord, BnetUserTokenRecord } from './types.js';
 
 export class InMemoryStore implements OAuthStore {
   private clients = new Map<string, ClientRecord>();
   private authCodes = new Map<string, AuthCodeRecord>();
   private tokens = new Map<string, TokenRecord>();
+  private bnetUserToken: BnetUserTokenRecord | undefined;
 
   async init(): Promise<void> { /* nothing to do */ }
 
@@ -45,12 +46,27 @@ export class InMemoryStore implements OAuthStore {
     this.tokens.delete(token);
   }
 
+  // ── Battle.net user token ───────────────────────────────────────────────────
+
+  async getBnetUserToken(): Promise<BnetUserTokenRecord | undefined> {
+    return this.bnetUserToken;
+  }
+
+  async setBnetUserToken(record: BnetUserTokenRecord): Promise<void> {
+    this.bnetUserToken = record;
+  }
+
+  async deleteBnetUserToken(): Promise<void> {
+    this.bnetUserToken = undefined;
+  }
+
   // ── Maintenance ────────────────────────────────────────────────────────────
 
   async cleanup(): Promise<void> {
     const now = Date.now();
     for (const [k, v] of this.authCodes) if (v.expiresAtMs <= now) this.authCodes.delete(k);
     for (const [k, v] of this.tokens) if (v.expiresAtMs <= now) this.tokens.delete(k);
+    if (this.bnetUserToken && this.bnetUserToken.expiresAtMs <= now) this.bnetUserToken = undefined;
   }
 
   async close(): Promise<void> { /* nothing to do */ }

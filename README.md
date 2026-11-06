@@ -1,6 +1,6 @@
 # wow-mcp
 
-MCP server that wraps the **complete World of Warcraft retail API** (Game Data + Profile) as 197 MCP tools. Supports **OAuth 2.1 authentication** (authorization code + PKCE for ChatGPT, client credentials for CLI tools) and is fully **region-agnostic** — every tool accepts `region` and `locale` as optional parameters, so a single server instance can query any region.
+MCP server that wraps the **complete World of Warcraft retail API** (Game Data + Profile) as 208 MCP tools. Supports **OAuth 2.1 authentication** (authorization code + PKCE for ChatGPT, client credentials for CLI tools) and is fully **region-agnostic** — every tool accepts `region` and `locale` as optional parameters, so a single server instance can query any region.
 
 ![screenshot](screenshot.png "Screenshot")
 
@@ -31,7 +31,8 @@ All 196 retail WoW endpoints are registered as individual MCP tools, plus one cu
 
 - **Game Data API** — 161 tools covering achievements, auctions, azerite essences, connected realms, covenants, creatures, guild crests, heirlooms, items, journals, media, modified crafting, mounts, mythic keystones, mythic raid leaderboards, pets, playable classes, playable races, playable specializations, power types, professions, PvP seasons, PvP tiers, quests, realms, regions, reputations, search endpoints, spells, talents, tech talents, titles, toys, and WoW tokens.
 - **Profile API** — 35 tools for character profiles, achievements, appearance, collections, dungeons, encounters, equipment, hunter pets, media, mythic keystone profile, professions, PvP, quests, reputations, soulbinds, specializations, statistics, titles, and guild endpoints.
-- **Custom** — `wow_character_achievementsTimeline` builds a chronologically sorted timeline of completed achievements (computed, not a raw Blizzard endpoint).
+- **Account Profile API** — 9 tools (`wow_account_*`) for the logged-in Battle.net account: all your characters, protected character data, and account-wide collections (mounts, pets, toys, transmogs, heirlooms, decor). These need [Battle.net user login](#battlenet-user-login).
+- **Custom** — `wow_character_achievementsTimeline` builds a chronologically sorted timeline of completed achievements (computed, not a raw Blizzard endpoint), plus `wow_account_login` / `wow_account_logout`.
 
 ### Region & locale
 
@@ -58,7 +59,20 @@ Every tool also accepts:
 
 Retail-only tools (covenants, soulbinds, azerite, Mythic+, housing, heirlooms, etc.) return an error when `game` is not `retail`.
 
-> **Forever caveats (as of launch):** public character lookups (`/profile/wow/character/...`) reportedly still 404, and `dynamic-forever-*` (auctions, realms) reportedly returns 403. Account-level profile data (`/profile/user/wow`) needs a user OAuth token, which this server does not support yet.
+> **Forever caveats (as of launch):** public character lookups (`/profile/wow/character/...`) reportedly still 404, and `dynamic-forever-*` (auctions, realms) reportedly returns 403. Account-level profile data (`/profile/user/wow`, i.e. the `wow_account_*` tools) reportedly works under `profile-forever-{region}` once you log in.
+
+## Battle.net user login
+
+The `wow_account_*` tools read data only the account owner can see, so they need you to log in to Battle.net once (the server keeps one linked account).
+
+**One-time setup** on [develop.battle.net](https://develop.battle.net/access/clients) → your client → **Redirect URLs**, add the URL Battle.net should send you back to. It must match `BNET_REDIRECT_URI` exactly:
+
+- Running locally: `http://localhost:3000/bnet/callback` (the default)
+- Deployed: `https://your-host.example.com/bnet/callback`, and set `BNET_REDIRECT_URI` to the same value
+
+**Logging in:** ask your MCP client to run `wow_account_login`. It returns a one-time link (valid 10 minutes). Open it, log in to Battle.net and approve access; the page then says the account is linked. Battle.net logins last about 24 hours and have no refresh token, so run `wow_account_login` again when the tools say the login expired.
+
+With `DATABASE_URL` set, the login survives server restarts; otherwise it is kept in memory.
 
 ## Environment variables
 
@@ -66,6 +80,10 @@ See [`.env.example`](.env.example). Only two are required:
 
 - `BNET_CLIENT_ID` — Battle.net OAuth client ID
 - `BNET_CLIENT_SECRET` — Battle.net OAuth client secret
+
+Optional Battle.net user login:
+
+- `BNET_REDIRECT_URI` — where Battle.net sends you after login (default: `http://localhost:3000/bnet/callback`). Must match a redirect URL registered for your client.
 
 Optional auth (OAuth 2.1 for the MCP HTTP endpoint):
 
@@ -144,11 +162,13 @@ src/
     schemas.ts                      # shared zod input schemas
   blizzard/
     tokenManager.ts                 # OAuth client-credentials + single-flight
+    userAuth.ts                     # Battle.net user login (authorization code) + /bnet/callback
     client.ts                       # got wrapper: bearer injection, cache, 401 retry
     endpoints/
       types.ts                      # EndpointDef interface, buildPath(), schema helpers
       gamedata.ts                   # 161 Game Data API endpoint definitions
       profileEndpoints.ts           # 35 Profile API endpoint definitions
+      accountEndpoints.ts           # 9 Account Profile API endpoint definitions (user login)
     schemas/
       characterSchemas.ts           # zod response schemas
       achievementSchemas.ts
@@ -161,6 +181,7 @@ src/
     logger.ts                       # pino (stderr)
 test/
   auth.test.ts                      # OAuth2 auth integration tests
+  bnetLogin.test.ts                 # Battle.net user login tests
 ```
 
 Endpoints are defined declaratively in `gamedata.ts` and `profileEndpoints.ts`. Each entry specifies a tool name, path template, namespace type, and zod input schema. The `tools.ts` module iterates over the registry and auto-registers every entry as an MCP tool, injecting `region`, `locale`, `game` and `namespace` parameters automatically.

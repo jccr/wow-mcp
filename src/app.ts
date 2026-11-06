@@ -14,6 +14,7 @@ import {
 } from './auth.js';
 import type { Env } from './config/env.js';
 import { registerTools } from './mcp/tools.js';
+import { handleBnetCallback } from './blizzard/userAuth.js';
 import { logger } from './util/logger.js';
 
 function createMcpHandler(env: Env) {
@@ -105,6 +106,20 @@ export async function createApp(env: Env): Promise<Server> {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'server_error' }));
+        }
+      }
+      return;
+    }
+
+    // ── Battle.net user login callback (validated by one-time state) ─────
+    if (url.pathname === '/bnet/callback') {
+      try {
+        await handleBnetCallback(env, req, res);
+      } catch (err) {
+        logger.error({ err }, '/bnet/callback error');
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Internal server error');
         }
       }
       return;
