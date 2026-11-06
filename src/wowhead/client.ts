@@ -30,8 +30,10 @@ export interface WowheadClientOptions {
   cacheTtlMs?: number;
   cookie?: string;
   pagesDataDir?: string;
-  /** Minimum gap between www.wowhead.com requests (default 500ms, env WOWHEAD_MIN_INTERVAL_MS, 0 disables). */
+  /** Minimum gap between cookie-carrying page requests (default 500ms, env WOWHEAD_MIN_INTERVAL_MS, 0 disables). */
   minIntervalMs?: number;
+  /** Minimum gap between cookie-free www.wowhead.com requests (default 150ms, env WOWHEAD_PUBLIC_MIN_INTERVAL_MS, 0 disables). */
+  publicMinIntervalMs?: number;
 }
 
 interface CacheEntry<T> {
@@ -52,14 +54,18 @@ export function normalizeEntityType(type: string): string {
 }
 
 export class WowheadForeverClient {
+  /** Carries the session cookie; used only for HTML pages (quests, zones, item pages). */
   private http: Got;
+  /** Never carries the cookie; used for item XML, search, guides and tooltips. */
+  private readonly publicHttp: Got;
   private readonly userAgent: string;
   private readonly cacheTtlMs: number;
   private readonly pagesDataDir: string;
   private readonly cache = new Map<string, CacheEntry<unknown>>();
   private currentCookie?: string;
   private readonly minIntervalMs: number;
-  private nextSlotAt = 0;
+  private readonly publicMinIntervalMs: number;
+  private readonly nextSlotAt: Record<'page' | 'public', number> = { page: 0, public: 0 };
 
   constructor(options: WowheadClientOptions = {}) {
     this.userAgent =
@@ -72,15 +78,23 @@ export class WowheadForeverClient {
       process.env['WOWHEAD_PAGES_DIR'] ??
       path.resolve(process.cwd(), 'data', 'pages');
 
-    const envInterval = Number(process.env['WOWHEAD_MIN_INTERVAL_MS']);
-    this.minIntervalMs = options.minIntervalMs ?? (Number.isFinite(envInterval) && process.env['WOWHEAD_MIN_INTERVAL_MS'] ? envInterval : 500);
+    const envMs = (name: string, fallback: number): number => {
+      const raw = process.env[name];
+      const n = Number(raw);
+      return raw && Number.isFinite(n) ? n : fallback;
+    };
+    this.minIntervalMs = options.minIntervalMs ?? envMs('WOWHEAD_MIN_INTERVAL_MS', 500);
+    this.publicMinIntervalMs = options.publicMinIntervalMs ?? envMs('WOWHEAD_PUBLIC_MIN_INTERVAL_MS', 150);
 
     const cookie = options.cookie ?? process.env['WOWHEAD_COOKIE'];
     this.currentCookie = cookie;
-    this.http = this.buildHttp(cookie);
+    this.http = this.buildHttp(cookie, 'page');
+    // Item XML, search and tooltips work without the cookie, and an expired cookie makes
+    // the XML endpoint return 405, so these requests never carry it.
+    this.publicHttp = this.buildHttp(undefined, 'public');
   }
 
-  private buildHttp(cookie?: string): Got {
+  private buildHttp(cookie: string | undefined, lane: 'page' | 'public'): Got {
     const headers: Record<string, string> = {
       'user-agent': this.userAgent,
       accept: '*/*',
@@ -99,18 +113,20 @@ export class WowheadForeverClient {
       timeout: { request: 10000 },
       retry: { limit: 2 },
       hooks: {
-        // Space out requests to the cookie-protected site so bursts don't trip its bot protection
-        beforeRequest: [async (options) => this.waitForSlot(String(options.url))],
+        // Space out requests to www.wowhead.com so bursts don't trip its bot protection
+        beforeRequest: [async (options) => this.waitForSlot(String(options.url), lane)],
       },
     });
   }
 
   /**
-   * Waits until the next request slot for www.wowhead.com, keeping at least `minIntervalMs`
-   * between request starts. Other hosts (nether tooltips) are not throttled.
+   * Waits until the next request slot for www.wowhead.com. Cookie-carrying page requests
+   * keep at least `minIntervalMs` between starts; cookie-free requests (item XML, search)
+   * use their own lane with `publicMinIntervalMs`. Other hosts (nether tooltips) are not throttled.
    */
-  public async waitForSlot(url: string): Promise<void> {
-    if (this.minIntervalMs <= 0) return;
+  public async waitForSlot(url: string, lane: 'page' | 'public' = 'page'): Promise<void> {
+    const interval = lane === 'page' ? this.minIntervalMs : this.publicMinIntervalMs;
+    if (interval <= 0) return;
     let host: string;
     try {
       host = new URL(url).hostname;
@@ -120,8 +136,8 @@ export class WowheadForeverClient {
     if (host !== 'www.wowhead.com') return;
 
     const now = Date.now();
-    const slot = Math.max(now, this.nextSlotAt);
-    this.nextSlotAt = slot + this.minIntervalMs;
+    const slot = Math.max(now, this.nextSlotAt[lane]);
+    this.nextSlotAt[lane] = slot + interval;
     if (slot > now) await new Promise((resolve) => setTimeout(resolve, slot - now));
   }
 
@@ -129,7 +145,7 @@ export class WowheadForeverClient {
     const trimmed = cookie.trim();
     const formatted = trimmed.startsWith('aws-waf-token=') ? trimmed : `aws-waf-token=${trimmed}`;
     this.currentCookie = formatted;
-    this.http = this.buildHttp(formatted);
+    this.http = this.buildHttp(formatted, 'page');
   }
 
   public getCookie(): string | undefined {
@@ -186,7 +202,7 @@ export class WowheadForeverClient {
     const fullQuery = terms.join(' ');
     const url = `https://www.wowhead.com/forever/search/suggestions-template?q=${encodeURIComponent(fullQuery)}`;
 
-    const response = await this.http.get(url).json<WowheadSuggestionsResponse>();
+    const response = await this.publicHttp.get(url).json<WowheadSuggestionsResponse>();
     const results = (response.results ?? []).filter(
       (r) => r.type === 100 || r.typeName?.toLowerCase() === 'guide'
     );
@@ -239,7 +255,7 @@ export class WowheadForeverClient {
     // and returns structured data for drops, vendors, quest rewards, and crafting recipes.
     const xmlUrl = `https://www.wowhead.com/forever/item=${itemId}&xml`;
     try {
-      const xmlRes = await this.http.get(xmlUrl);
+      const xmlRes = await this.publicHttp.get(xmlUrl);
       if (xmlRes.statusCode === 200 && xmlRes.body.includes('<wowhead>')) {
         const parsedXml = parseItemXml(xmlRes.body, itemId);
         if (parsedXml.rawListviewsFound.length > 0) {
@@ -283,7 +299,7 @@ export class WowheadForeverClient {
 
     let raw: WowheadSuggestionsResponse;
     try {
-      const response = await this.http.get(url).json<WowheadSuggestionsResponse>();
+      const response = await this.publicHttp.get(url).json<WowheadSuggestionsResponse>();
       raw = response;
     } catch (err) {
       logger.error({ err, url }, 'Failed to query Wowhead search suggestions');
@@ -328,7 +344,7 @@ export class WowheadForeverClient {
         prefixes.map(async (prefix) => {
           const expUrl = `https://www.wowhead.com/forever/search/suggestions-template?q=${encodeURIComponent(prefix + ' ' + noun)}`;
           try {
-            const expRes = await this.http.get(expUrl).json<WowheadSuggestionsResponse>();
+            const expRes = await this.publicHttp.get(expUrl).json<WowheadSuggestionsResponse>();
             for (const r of expRes.results ?? []) {
               if (r.name.toLowerCase().includes(trimmed.toLowerCase())) {
                 expandedItems.set(r.id, {
@@ -381,7 +397,7 @@ export class WowheadForeverClient {
 
     let raw: WowheadTooltipResponse;
     try {
-      const response = await this.http.get(url).json<WowheadTooltipResponse>();
+      const response = await this.publicHttp.get(url).json<WowheadTooltipResponse>();
       raw = response;
     } catch (err: unknown) {
       const status = (err as { response?: { statusCode?: number } })?.response?.statusCode;
@@ -497,9 +513,9 @@ export class WowheadForeverClient {
     const url = `https://www.wowhead.com/forever/item=${itemId}&xml`;
     let body: string;
     try {
-      body = (await this.http.get(url)).body;
+      body = (await this.publicHttp.get(url)).body;
     } catch (err) {
-      throw this.wrapFetchError(err, `item #${itemId} data`);
+      throw this.wrapFetchError(err, `item #${itemId} data`, false);
     }
     const info = parseItemXmlInfo(body);
     if (!info) {
@@ -555,8 +571,14 @@ export class WowheadForeverClient {
     return parsed;
   }
 
-  private wrapFetchError(err: unknown, what: string): Error {
+  private wrapFetchError(err: unknown, what: string, usesCookie = true): Error {
     const status = (err as { response?: { statusCode?: number } })?.response?.statusCode;
+    if (!usesCookie && (status === 403 || status === 405 || status === 429)) {
+      return new Error(
+        `Wowhead rate-limited or blocked the request for ${what} (HTTP ${status}). ` +
+          'This endpoint does not use the session cookie; wait a minute and retry.',
+      );
+    }
     if (status === 403 || status === 405 || status === 202) {
       const reason = this.currentCookie ? 'expired or invalid' : 'missing';
       return new Error(

@@ -11,6 +11,15 @@ describe('Wowhead request throttling', () => {
     assert.ok(Date.now() - start >= 170, `elapsed ${Date.now() - start}ms`);
   });
 
+  it('keeps cookie-free requests in their own lane', async () => {
+    const client = new WowheadForeverClient({ minIntervalMs: 300, publicMinIntervalMs: 0 });
+    await client.waitForSlot('https://www.wowhead.com/forever/quest=902', 'page');
+    const start = Date.now();
+    // Public lane is unthrottled here, so it must not wait behind the page lane's 300ms gap
+    await Promise.all([1, 2, 3].map(() => client.waitForSlot('https://www.wowhead.com/forever/item=5306&xml', 'public')));
+    assert.ok(Date.now() - start < 100);
+  });
+
   it('does not throttle the tooltip host', async () => {
     const client = new WowheadForeverClient({ minIntervalMs: 200 });
     const start = Date.now();
