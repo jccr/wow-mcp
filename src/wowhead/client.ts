@@ -30,6 +30,8 @@ export interface WowheadClientOptions {
   cacheTtlMs?: number;
   cookie?: string;
   pagesDataDir?: string;
+  /** Minimum gap between www.wowhead.com requests (default 500ms, env WOWHEAD_MIN_INTERVAL_MS, 0 disables). */
+  minIntervalMs?: number;
 }
 
 interface CacheEntry<T> {
@@ -56,6 +58,8 @@ export class WowheadForeverClient {
   private readonly pagesDataDir: string;
   private readonly cache = new Map<string, CacheEntry<unknown>>();
   private currentCookie?: string;
+  private readonly minIntervalMs: number;
+  private nextSlotAt = 0;
 
   constructor(options: WowheadClientOptions = {}) {
     this.userAgent =
@@ -68,9 +72,15 @@ export class WowheadForeverClient {
       process.env['WOWHEAD_PAGES_DIR'] ??
       path.resolve(process.cwd(), 'data', 'pages');
 
+    const envInterval = Number(process.env['WOWHEAD_MIN_INTERVAL_MS']);
+    this.minIntervalMs = options.minIntervalMs ?? (Number.isFinite(envInterval) && process.env['WOWHEAD_MIN_INTERVAL_MS'] ? envInterval : 500);
+
     const cookie = options.cookie ?? process.env['WOWHEAD_COOKIE'];
     this.currentCookie = cookie;
+    this.http = this.buildHttp(cookie);
+  }
 
+  private buildHttp(cookie?: string): Got {
     const headers: Record<string, string> = {
       'user-agent': this.userAgent,
       accept: '*/*',
@@ -82,45 +92,44 @@ export class WowheadForeverClient {
       'sec-fetch-mode': 'cors',
       'sec-fetch-site': 'same-origin',
     };
+    if (cookie) headers['cookie'] = cookie;
 
-    if (cookie) {
-      headers['cookie'] = cookie;
-    }
-
-    this.http = got.extend({
+    return got.extend({
       headers,
-      timeout: {
-        request: 10000,
-      },
-      retry: {
-        limit: 2,
+      timeout: { request: 10000 },
+      retry: { limit: 2 },
+      hooks: {
+        // Space out requests to the cookie-protected site so bursts don't trip its bot protection
+        beforeRequest: [async (options) => this.waitForSlot(String(options.url))],
       },
     });
+  }
+
+  /**
+   * Waits until the next request slot for www.wowhead.com, keeping at least `minIntervalMs`
+   * between request starts. Other hosts (nether tooltips) are not throttled.
+   */
+  public async waitForSlot(url: string): Promise<void> {
+    if (this.minIntervalMs <= 0) return;
+    let host: string;
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      return;
+    }
+    if (host !== 'www.wowhead.com') return;
+
+    const now = Date.now();
+    const slot = Math.max(now, this.nextSlotAt);
+    this.nextSlotAt = slot + this.minIntervalMs;
+    if (slot > now) await new Promise((resolve) => setTimeout(resolve, slot - now));
   }
 
   public setCookie(cookie: string): void {
     const trimmed = cookie.trim();
     const formatted = trimmed.startsWith('aws-waf-token=') ? trimmed : `aws-waf-token=${trimmed}`;
     this.currentCookie = formatted;
-
-    const headers: Record<string, string> = {
-      'user-agent': this.userAgent,
-      accept: '*/*',
-      'accept-language': 'en-US,en;q=0.9',
-      'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
-      'sec-fetch-dest': 'empty',
-      'sec-fetch-mode': 'cors',
-      'sec-fetch-site': 'same-origin',
-      cookie: formatted,
-    };
-
-    this.http = got.extend({
-      headers,
-      timeout: { request: 10000 },
-      retry: { limit: 2 },
-    });
+    this.http = this.buildHttp(formatted);
   }
 
   public getCookie(): string | undefined {
