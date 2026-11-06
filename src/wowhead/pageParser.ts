@@ -21,6 +21,34 @@ export interface WowheadNpcSource {
   dropRatePercent?: number;
 }
 
+export interface WowheadVendorSource {
+  id: number;
+  name: string;
+  cost?: number; // In copper
+  costFormatted?: string;
+  stock?: number;
+  location?: number[];
+  react?: [number, number]; // [Alliance, Horde] reaction: 1 = friendly, -1 = hostile
+}
+
+export interface WowheadCraftingSource {
+  id: number;
+  name: string;
+  skillId?: number;
+  skillName?: string;
+  skillLevel?: number;
+  sourceType?: string;
+}
+
+export interface WowheadQuestSource {
+  id: number;
+  name: string;
+  reqLevel?: number;
+  level?: number;
+  side?: number;
+  sideName?: string;
+}
+
 export interface ItemSourcesResult {
   itemId?: number;
   droppedBy?: WowheadNpcSource[];
@@ -28,6 +56,9 @@ export interface ItemSourcesResult {
   minedFromObject?: WowheadNpcSource[];
   gatheredFromObject?: WowheadNpcSource[];
   containedInObject?: WowheadNpcSource[];
+  soldBy?: WowheadVendorSource[];
+  rewardFromQuests?: WowheadQuestSource[];
+  craftedBy?: WowheadCraftingSource[];
   rawListviewsFound: string[];
 }
 
@@ -42,6 +73,54 @@ const CLASSIFICATION_MAP: Record<number, string> = {
 /**
  * Normalizes raw ListView rows into clean NPC / Creature source records.
  */
+function formatCopperMoney(copper?: number): string | undefined {
+  if (copper === undefined || copper === null) return undefined;
+  const g = Math.floor(copper / 10000);
+  const s = Math.floor((copper % 10000) / 100);
+  const c = copper % 100;
+  const parts: string[] = [];
+  if (g > 0) parts.push(`${g}g`);
+  if (s > 0) parts.push(`${s}s`);
+  if (c > 0 || parts.length === 0) parts.push(`${c}c`);
+  return parts.join(' ');
+}
+
+function normalizeVendorRow(row: Record<string, any>): WowheadVendorSource {
+  const cost = typeof row.cost === 'number' ? row.cost : typeof row.avail === 'number' ? row.avail : undefined;
+  return {
+    id: row.id,
+    name: row.name ?? `Vendor #${row.id}`,
+    cost,
+    costFormatted: formatCopperMoney(cost),
+    stock: typeof row.stock === 'number' ? row.stock : undefined,
+    location: Array.isArray(row.location) ? row.location : undefined,
+    react: Array.isArray(row.react) ? [row.react[0], row.react[1]] : undefined,
+  };
+}
+
+function normalizeQuestRow(row: Record<string, any>): WowheadQuestSource {
+  const side = typeof row.side === 'number' ? row.side : undefined;
+  const sideName = side === 1 ? 'Alliance' : side === 2 ? 'Horde' : side === 3 ? 'Both' : undefined;
+  return {
+    id: row.id,
+    name: row.name ?? `Quest #${row.id}`,
+    reqLevel: row.reqlevel,
+    level: row.level,
+    side,
+    sideName,
+  };
+}
+
+function normalizeCraftingRow(row: Record<string, any>): WowheadCraftingSource {
+  return {
+    id: row.id,
+    name: row.name ?? `Recipe #${row.id}`,
+    skillId: row.skill,
+    skillName: row.skillname,
+    skillLevel: row.learnedat ?? row.colors?.[0],
+    sourceType: row.sourcemore?.[0]?.n ?? row.sourcename,
+  };
+}
 function normalizeNpcRow(row: Record<string, any>): WowheadNpcSource {
   const minLvl = Array.isArray(row.level) ? row.level[0] : row.minlevel ?? row.level;
   const maxLvl = Array.isArray(row.level) ? row.level[1] : row.maxlevel ?? row.level;
@@ -161,6 +240,9 @@ export function parseItemSources(html: string): ItemSourcesResult {
   const minedFromObject = listviews['mined-from-object']?.map(normalizeNpcRow);
   const gatheredFromObject = listviews['gathered-from-object']?.map(normalizeNpcRow);
   const containedInObject = listviews['contained-in-object']?.map(normalizeNpcRow);
+  const soldBy = (listviews['sold-by'] ?? listviews['vendors'])?.map(normalizeVendorRow);
+  const rewardFromQuests = (listviews['reward-of-quest'] ?? listviews['reward-from-quests'])?.map(normalizeQuestRow);
+  const craftedBy = (listviews['crafted-by'] ?? listviews['created-by'])?.map(normalizeCraftingRow);
 
   return {
     droppedBy,
@@ -168,6 +250,9 @@ export function parseItemSources(html: string): ItemSourcesResult {
     minedFromObject,
     gatheredFromObject,
     containedInObject,
+    soldBy,
+    rewardFromQuests,
+    craftedBy,
     rawListviewsFound: foundKeys,
   };
 }

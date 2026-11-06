@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WowheadForeverClient } from './client.js';
+import { WowheadDataClient } from './dataClient.js';
 import { entityTypeEnum } from './types.js';
 
 function errorContent(message: string) {
@@ -19,6 +20,7 @@ function jsonContent(data: unknown) {
 export function registerWowheadTools(
   server: McpServer,
   client: WowheadForeverClient = new WowheadForeverClient(),
+  dataClient: WowheadDataClient = new WowheadDataClient(),
 ): void {
   // ── wowhead_search ─────────────────────────────────────
   server.tool(
@@ -227,6 +229,42 @@ export function registerWowheadTools(
       try {
         const details = await client.getTooltip(entityType, id, locale);
         return jsonContent(details);
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // ── wowhead_get_icon_url ──────────────────────────────
+  server.tool(
+    'wowhead_get_icon_url',
+    'Generate direct high-resolution CDN image URLs for WoW icons (items, spells, abilities).',
+    {
+      iconName: z.string().describe('Icon name returned in search or tooltip responses (e.g. "inv_sword_39", "spell_fire_flamebolt")'),
+      size: z.enum(['small', 'medium', 'large']).default('large').describe('Icon size: small (18x18), medium (36x36), or large (56x56)'),
+    },
+    async ({ iconName, size }) => {
+      const url = dataClient.getIconUrl(iconName, size);
+      return jsonContent({ iconName, size, url });
+    },
+  );
+
+  // ── wowhead_get_scaling_data ───────────────────────────
+  server.tool(
+    'wowhead_get_scaling_data',
+    'Fetch global combat math and stat scaling matrices from Wowhead (item budget allocations or spell coefficients).',
+    {
+      type: z.enum(['item', 'spell']).describe('Scaling data type: "item" for stat budgets by ilvl, "spell" for ability coefficients'),
+    },
+    async ({ type }) => {
+      try {
+        const data = type === 'item' ? await dataClient.getItemScaling() : await dataClient.getSpellScaling();
+        return jsonContent({
+          type,
+          summary: type === 'item' ? 'Item stat budgets by level/quality' : 'Spell coefficient matrix',
+          keysCount: Object.keys(data).length,
+          data,
+        });
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
