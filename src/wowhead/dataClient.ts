@@ -26,6 +26,18 @@ export class WowheadDataClient {
   }
 
   /**
+   * Fetches Wowhead's global spec and class spell association matrix.
+   */
+  public async getSpecSpells(): Promise<{
+    class: Record<string, number[]>;
+    spec: Record<string, number[]>;
+    specMap: Record<string, number>;
+  }> {
+    const url = 'https://nether.wowhead.com/data/spec-spells?dataEnv=16';
+    return this.http.get(url).json();
+  }
+
+  /**
    * Fetches Wowhead's global item stat-scaling matrix (ilvl, budget allocations, curves).
    */
   public async getItemScaling(): Promise<Record<string, any>> {

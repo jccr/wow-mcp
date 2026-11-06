@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WowheadForeverClient } from './client.js';
 import { WowheadDataClient } from './dataClient.js';
+import { findClass, WOW_CLASSES } from './classes.js';
 import { entityTypeEnum } from './types.js';
 
 function errorContent(message: string) {
@@ -279,6 +280,48 @@ export function registerWowheadTools(
       try {
         const details = await client.getTooltip(entityType, id, locale);
         return jsonContent(details);
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // ── wowhead_get_class ─────────────────────────────────
+  server.tool(
+    'wowhead_get_class',
+    'Fetch class profile, available specs, roles, armor/weapon proficiencies, resources, and races from Wowhead Forever.',
+    {
+      classIdentifier: z.union([z.string(), z.number()]).describe('Class name, slug, or ID (e.g. "shaman", "paladin", 7, "Warrior")'),
+      includeSpellIds: z.boolean().default(false).describe('If true, fetches and includes the list of associated baseline spell IDs from Wowhead spec-spells database'),
+    },
+    async ({ classIdentifier, includeSpellIds }) => {
+      try {
+        const classDef = findClass(classIdentifier);
+        if (!classDef) {
+          return errorContent(`Unknown class: "${classIdentifier}". Valid classes: ${Object.values(WOW_CLASSES).map(c => c.name).join(', ')}`);
+        }
+
+        let baselineSpells: number[] | undefined;
+        const specSpells: Record<string, number[]> = {};
+
+        if (includeSpellIds) {
+          try {
+            const data = await dataClient.getSpecSpells();
+            baselineSpells = data.class?.[String(classDef.id)];
+            for (const spec of classDef.specs) {
+              specSpells[spec.name] = data.spec?.[String(spec.id)] ?? [];
+            }
+          } catch {
+            // Best effort for spell associations
+          }
+        }
+
+        return jsonContent({
+          ...classDef,
+          baselineSpellCount: baselineSpells?.length,
+          baselineSpells: includeSpellIds ? baselineSpells : undefined,
+          specSpells: includeSpellIds ? specSpells : undefined,
+        });
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
