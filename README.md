@@ -58,7 +58,7 @@ For personal and experimental use querying [World of Warcraft: Forever client da
 - `wowhead_get_spell` — Spell description, cast time, mana cost, range, and buff info by spell ID
 - `wowhead_get_quest` — Quest objectives, rewards (items with type/DPS/stats/restrictions, XP, money, reputation), level, side, start/end NPCs with map locations, quest chain, and a `rewardsStatus` of `ok`/`none`/`unavailable`
 - `wowhead_list_zone_quests` — Quests in one or more zones with levels, sides, rewards, and class/race restrictions; filter by faction, level, and completed quests
-- `wowhead_find_quest_rewards` — Quest reward weapons/armor across zones that a character can use (class proficiency, race, level), optionally compared against the equipped item, with quest giver locations
+- `wowhead_find_quest_rewards` — Quest reward weapons/armor across zones that a character can use (class proficiency, race, level), compared slot-by-slot against equipped gear (flags empty slots), with quest giver and chain-start locations
 - `wowhead_compare_items` — DPS, speed, armor, item level, and stat deltas of candidate items versus an equipped item, with usability checks
 - `wowhead_get_npc` — NPC name, level, classification (Boss, Elite), tooltip, and location (zone, map coordinates, `/way` waypoint) by NPC ID
 - `wowhead_get_object` — Interactive game object details by object ID

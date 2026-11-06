@@ -315,6 +315,44 @@ export function checkUsability(
   return { usable: reasons.length === 0, reasons };
 }
 
+/**
+ * Groups inventory slots that compete for the same equipment slot: any main-hand capable
+ * weapon replaces another, robes replace chests, shields/off-hands/held items share the off hand.
+ */
+const SLOT_GROUPS: Record<number, string> = {
+  13: 'main-hand',
+  17: 'main-hand',
+  21: 'main-hand',
+  14: 'off-hand',
+  22: 'off-hand',
+  23: 'off-hand',
+  5: 'chest',
+  20: 'chest',
+  15: 'ranged',
+  25: 'ranged',
+  26: 'ranged',
+  28: 'ranged',
+};
+
+export function slotGroup(slotId: number | undefined): string | undefined {
+  if (slotId === undefined || slotId === 0) return undefined;
+  return SLOT_GROUPS[slotId] ?? `slot-${slotId}`;
+}
+
+/** Picks the equipped item occupying the same slot as the candidate (lowest item level for rings/trinkets). */
+export function findEquippedInSlot(candidate: Pick<ItemInfo, 'slotId'>, equipped: ItemInfo[]): ItemInfo | undefined {
+  const group = slotGroup(candidate.slotId);
+  if (!group) return undefined;
+  const matches = equipped.filter((e) => slotGroup(e.slotId) === group);
+  if (matches.length <= 1) return matches[0];
+  return [...matches].sort((a, b) => (a.itemLevel ?? 0) - (b.itemLevel ?? 0))[0];
+}
+
+/** Number of items a slot group holds (two rings, two trinkets). */
+export function slotCapacity(slotId: number | undefined): number {
+  return slotId === 11 || slotId === 12 ? 2 : 1;
+}
+
 export interface ItemComparison {
   comparedToItemId: number;
   comparedToName: string;

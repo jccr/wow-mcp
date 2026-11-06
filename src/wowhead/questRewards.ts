@@ -8,6 +8,9 @@ import {
   checkUsability,
   compareItems,
   decodeMask,
+  findEquippedInSlot,
+  slotCapacity,
+  slotGroup,
   CLASS_MASK,
   RACE_MASK,
   type ItemComparison,
@@ -85,7 +88,18 @@ export interface RewardCandidate {
   rewardType: 'choice' | 'guaranteed';
   usable: boolean;
   unusableReasons?: string[];
+  /** Comparison against the equipped item in the same slot. */
   comparison?: ItemComparison;
+  /** True when the character's full equipment was given and nothing occupies this slot. */
+  fillsEmptySlot?: boolean;
+  /** Slot caveat, e.g. a shield while a two-handed weapon is equipped. */
+  slotNote?: string;
+}
+
+export interface EquipmentContext {
+  items: ItemInfo[];
+  /** True when `items` is the character's complete equipment, so a missing slot means it is empty. */
+  complete: boolean;
 }
 
 /**
@@ -156,12 +170,15 @@ export function findRewardCandidates(pages: ZoneQuestsPage[], opts: RewardSearch
   );
 }
 
-/** Merges full item info (stats, restrictions) into candidates and re-checks usability with it. */
+/**
+ * Merges full item info (stats, restrictions) into candidates, re-checks usability, and
+ * compares each candidate only against equipped gear in the same slot.
+ */
 export function enrichCandidates(
   candidates: RewardCandidate[],
   infos: Map<number, ItemInfo | { error: string }>,
   opts: RewardSearchOptions,
-  current?: ItemInfo,
+  equipment?: EquipmentContext,
 ): RewardCandidate[] {
   return candidates.map((c) => {
     const info = infos.get(c.item.id);
@@ -172,12 +189,32 @@ export function enrichCandidates(
       level: opts.characterLevel,
       includeTalentGated: opts.includeTalentGated,
     });
+
+    let comparison: ItemComparison | undefined;
+    let fillsEmptySlot: boolean | undefined;
+    let slotNote: string | undefined;
+    if (equipment && equipment.items.length > 0) {
+      const group = slotGroup(item.slotId);
+      const inSlot = equipment.items.filter((e) => slotGroup(e.slotId) === group);
+      const current = findEquippedInSlot(item, equipment.items);
+      const twoHander = equipment.items.find((e) => e.slotId === 17);
+      if (group === 'off-hand' && twoHander) {
+        slotNote = `Off-hand items require replacing the two-handed ${twoHander.name}`;
+      } else if (equipment.complete && group && inSlot.length < slotCapacity(item.slotId)) {
+        fillsEmptySlot = true;
+      } else if (current) {
+        comparison = compareItems(item, current);
+      }
+    }
+
     return {
       ...c,
       item,
       usable: usability.usable,
       unusableReasons: usability.usable ? undefined : usability.reasons,
-      comparison: current ? compareItems(item, current) : undefined,
+      comparison,
+      fillsEmptySlot,
+      slotNote,
     };
   });
 }

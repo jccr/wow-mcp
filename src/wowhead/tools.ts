@@ -8,7 +8,7 @@ import { findClass, WOW_CLASSES } from './classes.js';
 import { findDungeons, FOREVER_DUNGEONS } from './dungeons.js';
 import { entityTypeEnum } from './types.js';
 import { checkUsability, compareItems, type ItemInfo } from './itemInfo.js';
-import { enrichCandidates, filterZoneQuests, findRewardCandidates } from './questRewards.js';
+import { enrichCandidates, filterZoneQuests, findRewardCandidates, type EquipmentContext } from './questRewards.js';
 import type { NpcLocation } from './locations.js';
 
 function errorContent(message: string) {
@@ -29,18 +29,32 @@ type NpcRef = { id: number; name: string; location?: NpcLocation };
 interface QuestGivers {
   giver?: NpcRef;
   turnIn?: NpcRef;
+  /** For a quest inside a chain: the first quest of the chain and who gives it. */
+  chainStart?: { questId: number; name: string; stepCount: number; currentStep: number; giver?: NpcRef; note?: string };
   /** Why givers are missing, e.g. the quest page could not be fetched. */
   note?: string;
 }
 
+type QuestDetails = Awaited<ReturnType<WowheadForeverClient['getQuestDetails']>>;
+
 /**
- * Resolves start/end NPCs (from quest pages, cookie required) and their map
- * locations (from tooltips, no cookie needed) for a set of quests.
+ * Resolves start/end NPCs (from quest pages, cookie required), the giver of the first
+ * quest in the chain, and map locations (from tooltips, no cookie needed).
  */
 async function resolveQuestGivers(client: WowheadForeverClient, questIds: number[]): Promise<Map<number, QuestGivers>> {
   const unique = [...new Set(questIds)];
-  const details = new Map<number, Awaited<ReturnType<WowheadForeverClient['getQuestDetails']>>>();
-  await Promise.all(unique.map(async (id) => details.set(id, await client.getQuestDetails(id))));
+  const details = new Map<number, QuestDetails>();
+  const load = async (ids: number[]) =>
+    Promise.all(ids.filter((id) => !details.has(id)).map(async (id) => details.set(id, await client.getQuestDetails(id))));
+  await load(unique);
+
+  // First steps of chains the quests belong to
+  const chainStartIds = new Map<number, number>();
+  for (const id of unique) {
+    const first = details.get(id)?.chain?.steps[0];
+    if (first?.questId !== undefined && first.questId !== id) chainStartIds.set(id, first.questId);
+  }
+  await load([...new Set(chainStartIds.values())]);
 
   const npcIds: number[] = [];
   for (const d of details.values()) {
@@ -48,6 +62,7 @@ async function resolveQuestGivers(client: WowheadForeverClient, questIds: number
     if (d?.info?.endNpc) npcIds.push(d.info.endNpc.id);
   }
   const locations = await client.getNpcLocations(npcIds);
+  const ref = (npc?: { id: number; name: string }): NpcRef | undefined => (npc ? { ...npc, location: locations.get(npc.id) } : undefined);
 
   const result = new Map<number, QuestGivers>();
   for (const id of unique) {
@@ -56,11 +71,25 @@ async function resolveQuestGivers(client: WowheadForeverClient, questIds: number
       result.set(id, { note: 'Quest page unavailable (Wowhead session cookie may be expired)' });
       continue;
     }
-    const ref = (npc?: { id: number; name: string }): NpcRef | undefined =>
-      npc ? { ...npc, location: locations.get(npc.id) } : undefined;
     const giver = ref(d.info?.startNpc);
     const turnIn = d.info?.endNpc && d.info.endNpc.id !== d.info.startNpc?.id ? ref(d.info.endNpc) : undefined;
-    result.set(id, giver || turnIn ? { giver, turnIn } : { note: 'Quest starts from an item or object, or the giver is not listed' });
+    const entry: QuestGivers = giver || turnIn ? { giver, turnIn } : { note: 'Quest starts from an item or object, or the giver is not listed' };
+
+    const startId = chainStartIds.get(id);
+    const steps = d.chain?.steps ?? [];
+    if (startId !== undefined) {
+      const start = details.get(startId);
+      const startGiver = ref(start?.info?.startNpc);
+      entry.chainStart = {
+        questId: startId,
+        name: steps[0].name,
+        stepCount: steps.length,
+        currentStep: steps.findIndex((s) => s.current) + 1,
+        giver: startGiver,
+        note: startGiver ? undefined : start ? 'Chain starts from an item or object' : 'Chain start page unavailable',
+      };
+    }
+    result.set(id, entry);
   }
   return result;
 }
@@ -281,6 +310,10 @@ export function registerWowheadTools(
             endNpc: info.endNpc ? { ...info.endNpc, location: locations.get(info.endNpc.id) } : undefined,
           };
         }
+        if (includeLocations && details.chain && details.chain.steps[0]?.questId !== id) {
+          const chainStart = (await resolveQuestGivers(client, [id])).get(id)?.chainStart;
+          if (chainStart) output.chainStart = chainStart;
+        }
         return jsonContent(output);
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
@@ -347,14 +380,17 @@ export function registerWowheadTools(
       minQuestLevel: z.number().int().min(1).max(60).optional().describe('Minimum quest level'),
       maxQuestLevel: z.number().int().min(1).max(60).optional().describe('Maximum quest level'),
       excludeQuestIds: z.array(z.number().int().positive()).optional().describe('Quest IDs to skip (completed quests from wow_character_completedQuests)'),
-      compareToItemId: z.number().int().positive().optional().describe('Currently equipped item ID to compare against (DPS/stat deltas)'),
+      equippedItemIds: z.array(z.number().int().positive()).max(25).optional().describe(
+        'All currently equipped item IDs (from wow_character_equipment). Each reward is compared with the item in the same slot, and rewards for empty slots are flagged fillsEmptySlot',
+      ),
+      compareToItemId: z.number().int().positive().optional().describe('A single equipped item to compare against; only rewards for the same slot get a comparison'),
       includeUnusable: z.boolean().default(false).describe('Also list items the character cannot use, with reasons'),
       includeTalentGated: z.boolean().default(false).describe('Treat talent-unlocked weapon types (e.g. Shaman two-handed axes/maces) as usable'),
       includeStats: z.boolean().default(true).describe('Fetch full stats/restrictions for returned items (one request per item)'),
       includeQuestGivers: z.boolean().default(true).describe('Attach quest giver/turn-in NPCs with map coordinates and /way waypoints'),
       limit: z.number().int().min(1).max(50).default(15).describe('Maximum candidates to return (default: 15)'),
     },
-    async ({ zoneIds, compareToItemId, includeStats, includeQuestGivers, limit, ...opts }) => {
+    async ({ zoneIds, compareToItemId, equippedItemIds, includeStats, includeQuestGivers, limit, ...opts }) => {
       try {
         const pages = await Promise.all(zoneIds.map((z) => client.getZoneQuests(z)));
         let candidates = findRewardCandidates(pages, opts);
@@ -362,12 +398,17 @@ export function registerWowheadTools(
         // Over-fetch slightly: full stats can reveal class/race restrictions that drop candidates
         candidates = candidates.slice(0, includeStats ? Math.min(limit * 2, 60) : limit);
 
-        let current: ItemInfo | undefined;
-        if (compareToItemId) current = await client.getItemInfo(compareToItemId);
+        let equipment: EquipmentContext | undefined;
+        const equippedIds = [...(equippedItemIds ?? []), ...(compareToItemId ? [compareToItemId] : [])];
+        if (equippedIds.length > 0) {
+          const loaded = await client.getItemInfos(equippedIds);
+          const items = [...loaded.values()].filter((i): i is ItemInfo => !('error' in i));
+          equipment = { items, complete: Boolean(equippedItemIds && equippedItemIds.length > 0) };
+        }
 
-        if (includeStats || current) {
+        if (includeStats || equipment) {
           const infos = includeStats ? await client.getItemInfos(candidates.map((c) => c.item.id)) : new Map();
-          candidates = enrichCandidates(candidates, infos, opts, current);
+          candidates = enrichCandidates(candidates, infos, opts, equipment);
           if (!opts.includeUnusable) candidates = candidates.filter((c) => c.usable);
         }
 
@@ -379,7 +420,7 @@ export function registerWowheadTools(
 
         return jsonContent({
           zones: pages.map((p) => ({ zoneId: p.zoneId, zoneName: p.zoneName })),
-          comparedTo: current ? { id: current.id, name: current.name, dps: current.dps, stats: current.stats } : undefined,
+          equipment: equipment?.items.map((i) => ({ id: i.id, name: i.name, slot: i.slot })),
           totalMatches,
           count: returned.length,
           candidates: returned,

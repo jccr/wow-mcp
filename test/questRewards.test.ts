@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseItemSources, parseQuestPage, parseZoneQuests } from '../src/wowhead/pageParser.js';
-import { checkUsability, compareItems, parseItemXmlInfo } from '../src/wowhead/itemInfo.js';
-import { filterZoneQuests, findRewardCandidates } from '../src/wowhead/questRewards.js';
+import { checkUsability, compareItems, findEquippedInSlot, parseItemXmlInfo, slotGroup } from '../src/wowhead/itemInfo.js';
+import { enrichCandidates, filterZoneQuests, findRewardCandidates } from '../src/wowhead/questRewards.js';
 
 // Trimmed from live Wowhead Forever responses (2026-11-06)
 const goblinSmasherXml = `<?xml version="1.0" encoding="UTF-8"?><wowhead><item id="4964"><name><![CDATA[Goblin Smasher]]></name>
@@ -103,6 +103,55 @@ describe('Item comparison', () => {
     assert.equal(cmp.itemLevelDelta, 7);
     assert.deepEqual(cmp.statDeltas, { agility: 6, intellect: 4, spellDamage: 18, spellHealing: 18 });
     assert.deepEqual(cmp.notes, []);
+  });
+});
+
+describe('Slot-aware comparison against equipment', () => {
+  const stormcaller = parseItemXmlInfo(makeshiftStormcallerXml)!;
+  const staff = parseItemXmlInfo(staffOfOrgrimmarXml)!;
+  const ring = { id: 281268, name: 'Depleted Ritual Band', itemLevel: 9, slotId: 11, stats: {} };
+  const ringReward = { id: 5313, name: 'Totemic Clan Ring', itemLevel: 25, slotId: 11, itemClassId: 4, subclassId: -2, stats: { intellect: 3 } };
+  const boots = { id: 10653, name: 'Trailblazer Boots', itemLevel: 30, slotId: 8, itemClassId: 4, subclassId: 2, stats: { agility: 7 } };
+  const shield = { id: 5357, name: 'Ward of the Vale', itemLevel: 27, slotId: 14, itemClassId: 4, subclassId: 6, stats: {} };
+
+  const candidate = (item: any) => ({
+    item,
+    quest: { id: 1, name: 'Q', zoneId: 17 },
+    rewardType: 'choice' as const,
+    usable: true,
+  });
+
+  it('groups one-hand, main-hand and two-hand weapons into one slot', () => {
+    assert.equal(slotGroup(13), slotGroup(17));
+    assert.equal(slotGroup(21), 'main-hand');
+    assert.notEqual(slotGroup(8), slotGroup(17));
+    assert.equal(findEquippedInSlot({ slotId: 21 }, [stormcaller, ring as any])?.id, stormcaller.id);
+  });
+
+  it('compares only within the same slot when given a single item', () => {
+    const [weapon, armor] = enrichCandidates([candidate(staff), candidate(boots)], new Map(), { className: 'shaman' }, {
+      items: [stormcaller],
+      complete: false,
+    });
+    assert.equal(weapon.comparison?.dpsDelta, 6.06);
+    assert.equal(armor.comparison, undefined);
+    assert.equal(armor.fillsEmptySlot, undefined);
+  });
+
+  it('flags empty slots and the free second ring slot with full equipment', () => {
+    const [b, r] = enrichCandidates([candidate(boots), candidate(ringReward)], new Map(), { className: 'shaman' }, {
+      items: [stormcaller, ring as any],
+      complete: true,
+    });
+    assert.equal(b.fillsEmptySlot, true);
+    assert.equal(r.fillsEmptySlot, true);
+    assert.equal(r.comparison, undefined);
+  });
+
+  it('notes that off-hand items conflict with a two-handed weapon', () => {
+    const [s] = enrichCandidates([candidate(shield)], new Map(), { className: 'shaman' }, { items: [stormcaller], complete: true });
+    assert.equal(s.fillsEmptySlot, undefined);
+    assert.ok(s.slotNote?.includes('Makeshift Stormcaller'));
   });
 });
 
