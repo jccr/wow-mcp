@@ -261,6 +261,22 @@ describe('Zone quests and reward search', () => {
     assert.deepEqual(candidates.map((c) => c.item.id), [4961]);
   });
 
+  it('excludes non-gear rewards when searching any item class', () => {
+    const withJunk = parseZoneQuests(
+      zoneHtml
+        .replace('{"category":215,"id":745,"itemrewards":[[4960,25]]', '{"category":215,"id":745,"itemrewards":[[4960,25],[13584,1]]')
+        .replace(
+          '{"classs":2,"id":15444,',
+          '{"classs":6,"id":4960,"level":7,"name":"Flash Pellet","subclass":3,"slot":24},{"classs":15,"id":13584,"level":20,"name":"Diablo Stone","subclass":2,"slot":0},{"classs":2,"id":15444,',
+        ),
+      215,
+    );
+    const ids = findRewardCandidates([withJunk], { className: 'shaman', characterLevel: 15, itemClass: 'any' }).map((c) => c.item.id);
+    assert.ok(!ids.includes(4960));
+    assert.ok(!ids.includes(13584));
+    assert.ok(ids.includes(4970)); // leather legs still included
+  });
+
   it('rejects non-zone pages', () => {
     assert.equal(parseZoneQuests('<html>challenge</html>', 215).isZonePage, false);
   });

@@ -115,9 +115,10 @@ export function findRewardCandidates(pages: ZoneQuestsPage[], opts: RewardSearch
       if (!row) continue; // not equippable / not in the zone's reward item table
       const item = buildItemInfo(row);
 
+      // Only gear: "any" means weapons and armor, never pets, bags, food or ammo
+      if (item.itemClassId !== 2 && item.itemClassId !== 4) continue;
       if (opts.itemClass === 'weapon' && item.itemClassId !== 2) continue;
       if (opts.itemClass === 'armor' && item.itemClassId !== 4) continue;
-      if (opts.itemClass !== 'any' && item.itemClassId !== 2 && item.itemClassId !== 4) continue;
       if (wantedSubclasses && !wantedSubclasses.some((s) => item.subclass?.toLowerCase().includes(s))) continue;
       if (opts.minDps !== undefined && (item.dps ?? 0) < opts.minDps) continue;
 
