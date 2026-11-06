@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WowheadForeverClient } from './client.js';
 import { WowheadDataClient } from './dataClient.js';
 import { findClass, WOW_CLASSES } from './classes.js';
+import { findDungeons, FOREVER_DUNGEONS } from './dungeons.js';
 import { entityTypeEnum } from './types.js';
 
 function errorContent(message: string) {
@@ -381,6 +382,40 @@ export function registerWowheadTools(
         return jsonContent({
           count: guides.length,
           guides,
+        });
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // ── wowhead_get_dungeon_quests ────────────────────────
+  server.tool(
+    'wowhead_get_dungeon_quests',
+    'Comprehensive dungeon leveling guide & quest index for WoW Forever (based on Wowhead\'s "Every Dungeon Quest in WoW Forever" guide #34916). Returns dungeon level ranges, quest givers, locations, and strategy guide links.',
+    {
+      level: z.number().int().min(1).max(60).optional().describe('Character level (e.g. 20, 35) to find appropriate dungeons and quests for leveling'),
+      faction: z.enum(['Alliance', 'Horde', 'Both']).default('Both').describe('Filter by faction: "Alliance", "Horde", or "Both"'),
+      dungeonName: z.string().optional().describe('Filter by specific dungeon name or keyword (e.g. "Deadmines", "Hall of Thanes", "Dalaran", "Wailing Caverns")'),
+    },
+    async ({ level, faction, dungeonName }) => {
+      try {
+        const dungeons = findDungeons({
+          level,
+          faction,
+          searchQuery: dungeonName,
+        });
+
+        return jsonContent({
+          masterGuide: {
+            title: 'Every Dungeon Quest in WoW Forever',
+            id: 34916,
+            url: 'https://www.wowhead.com/forever/guide/dungeons/every-dungeon-quest-location',
+            description: 'Every Dungeon Quest in WoW Forever. Level required, is it Shareable, Locations and More.',
+          },
+          filter: { level, faction, dungeonName },
+          count: dungeons.length,
+          dungeons,
         });
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
