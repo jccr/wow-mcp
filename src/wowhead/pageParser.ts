@@ -661,7 +661,9 @@ export function parseQuestPage(html: string, questId: number): QuestPageDetails 
   result.info = parseQuestInfobox(html);
   result.chain = parseQuestChain(html, questId);
 
-  const start = html.indexOf('Rewards</h2>');
+  // Quests that only grant XP/reputation have a "Gains" section but no "Rewards" heading
+  const rewardsIdx = html.indexOf('Rewards</h2>');
+  const start = rewardsIdx !== -1 ? rewardsIdx : html.indexOf('Gains</h2>');
   if (start === -1) {
     return result;
   }
@@ -675,8 +677,12 @@ export function parseQuestPage(html: string, questId: number): QuestPageDetails 
   const itemRegex = /href="\/forever\/item=(\d+)(?:\/[^"]*)?"[^>]*>([^<]+)<\/a>/g;
   const items: Array<{ id: number; name: string; choice?: boolean }> = [];
   let m: RegExpExecArray | null;
+  const seenItems = new Set<number>();
   while ((m = itemRegex.exec(rewardsHtml)) !== null) {
-    items.push({ id: Number(m[1]), name: m[2], choice: isChoice });
+    const id = Number(m[1]);
+    if (seenItems.has(id)) continue;
+    seenItems.add(id);
+    items.push({ id, name: m[2], choice: isChoice });
   }
   if (items.length > 0) {
     result.items = items;

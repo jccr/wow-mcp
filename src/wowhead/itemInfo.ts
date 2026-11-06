@@ -166,7 +166,7 @@ export function decodeMask(mask: number | undefined, table: Record<number, strin
 export function subclassName(itemClassId?: number, subclassId?: number): string | undefined {
   if (subclassId === undefined) return undefined;
   if (itemClassId === 2) return WEAPON_SUBCLASS_NAMES[subclassId];
-  if (itemClassId === 4) return ARMOR_SUBCLASS_NAMES[subclassId];
+  if (itemClassId === 4) return subclassId === -6 ? 'Cloak' : ARMOR_SUBCLASS_NAMES[subclassId];
   return undefined;
 }
 
@@ -299,7 +299,8 @@ export function checkUsability(
             : `${character.className} cannot use ${item.subclass ?? 'this weapon type'}`,
         );
       }
-    } else if (item.itemClassId === 4 && item.subclassId !== 0) {
+    } else if (item.itemClassId === 4 && item.subclassId > 0) {
+      // 0 = miscellaneous (rings, necks, trinkets); negative ids (-6 = cloak) are wearable by everyone
       if (!prof.armor.includes(item.subclassId)) {
         reasons.push(`${character.className} cannot wear ${item.subclass ?? 'this armor type'}`);
       } else {

@@ -77,6 +77,14 @@ describe('Usability checks', () => {
     assert.ok(result.reasons[0].includes('level 9'));
   });
 
+  it('treats cloaks (armor subclass -6) as wearable by every class', () => {
+    const cloakXml = `<wowhead><item id="5314"><json><![CDATA["armor":17,"classs":4,"id":5314,"level":20,"name":"Boar Hunter's Cape","quality":2,"reqlevel":14,"slot":16,"subclass":-6]]></json><jsonEquip><![CDATA["agi":3,"armor":17]]></jsonEquip></item></wowhead>`;
+    const cloak = parseItemXmlInfo(cloakXml)!;
+    assert.equal(cloak.subclass, 'Cloak');
+    assert.equal(checkUsability(cloak, trollShaman).usable, true);
+    assert.equal(checkUsability(cloak, { className: 'mage', level: 20 }).usable, true);
+  });
+
   it('enforces class masks and proficiency for other classes', () => {
     const totem = parseItemXmlInfo(totemXml)!;
     assert.equal(checkUsability(totem, { className: 'mage' }).usable, false);
@@ -150,6 +158,26 @@ describe('Quest page chain and infobox', () => {
       endNpc: { id: 4949, name: 'Thrall' },
       sharable: true,
     });
+  });
+
+  it('reads XP from quests that only have a Gains section', () => {
+    const html = `<script>var g_pageInfo = {"type":5,"typeId":878,"name":"Tribes at War"};</script>
+      <h2 class="heading-size-3">Gains</h2>Upon completion of this quest you will gain:
+      <ul><li><div id="quest-reward-xp"></div></li></ul>
+      <script>WH.Wow.Quest.setupScalingRewards({"minLevel":21,"maxLevel":21,"xp":{"multiplier":1,"levels":{"21":2100}},"coin":{"rewardAtCap":0,"multiplier":1,"levels":{"21":0}}});</script>
+      See if you've already completed this`;
+    const parsed = parseQuestPage(html, 878);
+    assert.equal(parsed.experience, 2100);
+    assert.equal(parsed.items, undefined);
+  });
+
+  it('lists each reward item once even when linked twice', () => {
+    const html = `<h2 class="heading-size-3">Rewards</h2>You will be able to choose one of these rewards:
+      <td><a href="/forever/item=10919/apothecary-gloves">Apothecary Gloves</a></td>
+      <td><a href="/forever/item=270008/heat-resistant-mitts">Heat Resistant Mitts</a></td>
+      <td><a href="/forever/item=10919/apothecary-gloves">Apothecary Gloves</a></td>
+      See if you've already completed this`;
+    assert.deepEqual(parseQuestPage(html, 962).items?.map((i) => i.id), [10919, 270008]);
   });
 
   it('flags non-quest pages so missing rewards are not reported as "none"', () => {
