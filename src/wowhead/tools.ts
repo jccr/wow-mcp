@@ -358,6 +358,36 @@ export function registerWowheadTools(
     },
   );
 
+  // ── wowhead_get_class_guides ──────────────────────────
+  server.tool(
+    'wowhead_get_class_guides',
+    'Search and retrieve Wowhead Forever class, spec, leveling, gearing, and rotation guides.',
+    {
+      className: z.string().optional().describe('Class name (e.g. "shaman", "warrior", "druid")'),
+      specName: z.string().optional().describe('Specialization name (e.g. "restoration", "elemental", "enhancement")'),
+      guideType: z.enum(['overview', 'leveling', 'talents', 'gear', 'rotation', 'all']).default('all').describe('Guide topic: "overview", "leveling", "talents", "gear", "rotation", or "all"'),
+      query: z.string().optional().describe('Additional search keywords (e.g. "stat priority", "beginner")'),
+      limit: z.number().int().min(1).max(25).default(10).describe('Maximum number of guides to return (default: 10)'),
+    },
+    async ({ className, specName, guideType, query, limit }) => {
+      try {
+        const guides = await client.getGuides({
+          className,
+          specName,
+          guideType,
+          query,
+          limit,
+        });
+        return jsonContent({
+          count: guides.length,
+          guides,
+        });
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
   // ── wowhead_get_icon_url ──────────────────────────────
   server.tool(
     'wowhead_get_icon_url',

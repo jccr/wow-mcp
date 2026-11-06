@@ -107,7 +107,50 @@ export class WowheadForeverClient {
 
   public getWebUrl(type: string, id: number): string {
     const norm = normalizeEntityType(type);
+    if (norm === 'guide') {
+      return `https://www.wowhead.com/forever/guide=${id}`;
+    }
     return `https://www.wowhead.com/forever/${norm}=${id}`;
+  }
+
+  /**
+   * Search and retrieve official Wowhead class and spec guides for WoW: Forever.
+   */
+  public async getGuides(
+    options: {
+      className?: string;
+      specName?: string;
+      guideType?: 'overview' | 'leveling' | 'talents' | 'gear' | 'rotation' | 'all';
+      query?: string;
+      limit?: number;
+    } = {}
+  ): Promise<import('./types.js').WowheadClassGuideItem[]> {
+    const terms: string[] = [];
+    if (options.className) terms.push(options.className);
+    if (options.specName) terms.push(options.specName);
+    if (options.guideType && options.guideType !== 'all') terms.push(options.guideType);
+    if (options.query) terms.push(options.query);
+    if (terms.length === 0) terms.push('classes guide');
+    else terms.push('guide');
+
+    const fullQuery = terms.join(' ');
+    const url = `https://www.wowhead.com/forever/search/suggestions-template?q=${encodeURIComponent(fullQuery)}`;
+
+    const response = await this.http.get(url).json<WowheadSuggestionsResponse>();
+    const results = (response.results ?? []).filter(
+      (r) => r.type === 100 || r.typeName?.toLowerCase() === 'guide'
+    );
+
+    const limit = options.limit ?? 10;
+    return results.slice(0, limit).map((r: any) => ({
+      id: r.id,
+      title: r.name,
+      category: r.pinTitle ?? 'Classes',
+      updatedDate: r.pinFooterText?.replace(/^Updated:\s*/, ''),
+      description: r.pinDescription,
+      headerImageUrl: r.pinImageUrl,
+      url: `https://www.wowhead.com/forever/guide=${r.id}`,
+    }));
   }
 
   /**

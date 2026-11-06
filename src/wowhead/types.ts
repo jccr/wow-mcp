@@ -63,6 +63,20 @@ export interface SearchResultItem {
   url: string;
 }
 
+/** Formatted class guide item */
+export interface WowheadClassGuideItem {
+  id: number;
+  title: string;
+  category: string;
+  updatedDate?: string;
+  description?: string;
+  headerImageUrl?: string;
+  url: string;
+  slugPath?: string;
+  author?: string;
+  patch?: string;
+}
+
 /** Raw tooltip response from nether.wowhead.com */
 export interface WowheadTooltipResponse {
   name?: string;
