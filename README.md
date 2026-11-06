@@ -13,7 +13,24 @@ cp .env.example .env
 
 npm install
 npm run build
-npm start          # stdio transport
+npm start          # HTTP transport on http://localhost:3000/mcp
+npm run start:stdio  # stdio transport (for clients that launch the server)
+```
+
+### Launching from an MCP client (stdio)
+
+`dist/stdio.js` speaks MCP over stdin/stdout, so clients like Claude Code can start and stop the server themselves. It also starts the HTTP listener (best-effort) so the [Battle.net login](#battlenet-user-login) callback still works. Node doesn't load `.env` on its own, so pass it with `--env-file`. Example `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "wow": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["--env-file=/path/to/wow-mcp/.env", "/path/to/wow-mcp/dist/stdio.js"]
+    }
+  }
+}
 ```
 
 ### Development
@@ -146,7 +163,8 @@ The compose stack includes a PostgreSQL instance for persistent OAuth token stor
 
 ```
 src/
-  index.ts                          # entry point — loads env, starts server
+  index.ts                          # entry point — loads env, starts HTTP server
+  stdio.ts                          # stdio entry point for client-launched use
   app.ts                            # HTTP server factory (all routes)
   auth.ts                           # OAuth 2.1 provider (metadata, registration, authorize, token, bearer validation)
   config/
